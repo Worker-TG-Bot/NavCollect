@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NavCollect - 个人网站导航收藏系统 | Cloudflare Worker + Telegram Bot</title>
+  <meta name="description" content="NavCollect 是一个基于 Cloudflare Worker 的个人网站导航收藏系统，支持 Telegram Bot 快速录入、深浅色主题、后台管理、多用户支持等功能。单文件部署，零成本运行。">
+  <meta name="keywords" content="NavCollect, Cloudflare Worker, Telegram Bot, 导航收藏, 书签管理, 链接收藏, 个人导航">
+  <meta name="author" content="NavCollect">
+  <meta property="og:title" content="NavCollect - 个人网站导航收藏系统">
+  <meta property="og:description" content="基于 Cloudflare Worker 的个人网站导航收藏系统，支持 Telegram Bot 快速录入">
+  <meta property="og:type" content="website">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📚</text></svg>">
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+    
+    .gradient-bg {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    }
+    
+    .code-container {
+      max-height: 600px;
+      overflow-y: auto;
+    }
+    
+    .code-container::-webkit-scrollbar {
+      width: 8px;
+    }
+    
+    .code-container::-webkit-scrollbar-track {
+      background: #1e293b;
+    }
+    
+    .code-container::-webkit-scrollbar-thumb {
+      background: #475569;
+      border-radius: 4px;
+    }
+    
+    .code-container::-webkit-scrollbar-thumb:hover {
+      background: #64748b;
+    }
+    
+    .feature-card:hover {
+      transform: translateY(-4px);
+      box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+    }
+    
+    .step-number {
+      width: 40px;
+      height: 40px;
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+    
+    .copy-success {
+      animation: pulse 0.5s ease;
+    }
+    
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.05); }
+    }
+    
+    pre code {
+      font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    
+    .dark-mode {
+      background-color: #0f172a;
+      color: #f1f5f9;
+    }
+    
+    .dark-mode .bg-white {
+      background-color: #1e293b !important;
+    }
+    
+    .dark-mode .text-gray-600 {
+      color: #94a3b8 !important;
+    }
+    
+    .dark-mode .text-gray-800 {
+      color: #f1f5f9 !important;
+    }
+    
+    .dark-mode .border-gray-200 {
+      border-color: #334155 !important;
+    }
+  </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+  <!-- Header -->
+  <header class="gradient-bg text-white py-20 px-4">
+    <div class="max-w-5xl mx-auto text-center">
+      <div class="text-6xl mb-6">📚</div>
+      <h1 class="text-4xl md:text-5xl font-bold mb-4">NavCollect</h1>
+      <p class="text-xl md:text-2xl opacity-90 mb-8">个人网站导航收藏系统</p>
+      <p class="text-lg opacity-80 max-w-2xl mx-auto mb-8">
+        基于 Cloudflare Worker 的单文件部署方案，支持 Telegram Bot 快速录入、深浅色主题、后台管理、多用户支持、可配置页脚等功能。零成本运行，数据存储在 Cloudflare KV。
+      </p>
+      <div class="flex flex-wrap justify-center gap-4">
+        <a href="#deploy" class="bg-white text-purple-600 px-6 py-3 rounded-lg font-semibold hover:bg-gray-100 transition">
+          🚀 开始部署
+        </a>
+        <a href="#features" class="border-2 border-white text-white px-6 py-3 rounded-lg font-semibold hover:bg-white/10 transition">
+          ✨ 功能特性
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <!-- Features Section -->
+  <section id="features" class="py-20 px-4">
+    <div class="max-w-6xl mx-auto">
+      <h2 class="text-3xl font-bold text-center text-gray-800 mb-4">✨ 功能特性</h2>
+      <p class="text-center text-gray-600 mb-12 max-w-2xl mx-auto">
+        NavCollect 提供完整的导航收藏解决方案，从网页端到 Telegram Bot，一应俱全
+      </p>
+      
+      <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <!-- Feature 1 -->
+        <div class="feature-card bg-white rounded-xl p-6 shadow-lg transition-all duration-300">
+          <div class="text-4xl mb-4">🤖</div>
+          <h3 class="text-xl font-semibold text-gray-800 mb-2">Telegram Bot 录入</h3>
+          <p class="text-gray-600">通过 Telegram Bot 快速添加收藏，支持 #标签、转发消息、代码块，随时随地记录灵感</p>
+        </div>
+        
+        <!-- Feature 2 -->
+        <div class="feature-card bg-white rounded-xl p-6 shadow-lg transition-all duration-300">
+          <div class="text-4xl mb-4">🌓</div>
+          <h3 class="text-xl font-semibold text-gray-800 mb-2">深浅色主题</h3>
+          <p class="text-gray-600">支持一键切换深色/浅色主题，自动保存用户偏好，保护眼睛</p>
+        </div>
+        
+        <!-- Feature 3 -->
+        <div class="feature-card bg-white rounded-xl p-6 shadow-lg transition-all duration-300">
+          <div class="text-4xl mb-4">⚡</div>
+          <h3 class="text-xl font-semibold text-gray-800 mb-2">SPA 单页应用</h3>
+          <p class="text-gray-600">页面切换无刷新，静默操作（删除、编辑、筛选），实时轮询更新内容</p>
+        </div>
+        
+        <!-- Feature 4 -->
+        <div class="feature-card bg-white rounded-xl p-6 shadow-lg transition-all duration-300">
+          <div class="text-4xl mb-4">🏷️</div>
+          <h3 class="text-xl font-semibold text-gray-800 mb-2">标签管理</h3>
+          <p class="text-gray-600">支持多标签分类，标签云可视化展示，快速筛选查找</p>
+        </div>
+        
+        <!-- Feature 5 -->
+        <div class="feature-card bg-white rounded-xl p-6 shadow-lg transition-all duration-300">
+          <div class="text-4xl mb-4">👥</div>
+          <h3 class="text-xl font-semibold text-gray-800 mb-2">多用户支持</h3>
+          <p class="text-gray-600">支持多个 Telegram 用户 ID，团队协作共享收藏</p>
+        </div>
+        
+        <!-- Feature 6 -->
+        <div class="feature-card bg-white rounded-xl p-6 shadow-lg transition-all duration-300">
+          <div class="text-4xl mb-4">⚙️</div>
+          <h3 class="text-xl font-semibold text-gray-800 mb-2">后台配置</h3>
+          <p class="text-gray-600">网站标题、Logo、Bot Token、页脚链接等全部可在后台实时配置</p>
+        </div>
+        
+        <!-- Feature 7 -->
+        <div class="feature-card bg-white rounded-xl p-6 shadow-lg transition-all duration-300">
+          <div class="text-4xl mb-4">📱</div>
+          <h3 class="text-xl font-semibold text-gray-800 mb-2">响应式布局</h3>
+          <p class="text-gray-600">完美适配电脑端和移动端，随时随地访问管理</p>
+        </div>
+        
+        <!-- Feature 8 -->
+        <div class="feature-card bg-white rounded-xl p-6 shadow-lg transition-all duration-300">
+          <div class="text-4xl mb-4">💻</div>
+          <h3 class="text-xl font-semibold text-gray-800 mb-2">代码块支持</h3>
+          <p class="text-gray-600">自动识别并美化显示代码块，支持语法高亮和一键复制</p>
+        </div>
+        
+        <!-- Feature 9 -->
+        <div class="feature-card bg-white rounded-xl p-6 shadow-lg transition-all duration-300">
+          <div class="text-4xl mb-4">🔒</div>
+          <h3 class="text-xl font-semibold text-gray-800 mb-2">安全认证</h3>
+          <p class="text-gray-600">网站密码登录 + Telegram 用户 ID 白名单，双重保护</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Deploy Section -->
+  <section id="deploy" class="py-20 px-4 bg-white">
+    <div class="max-w-4xl mx-auto">
+      <h2 class="text-3xl font-bold text-center text-gray-800 mb-4">🚀 部署步骤</h2>
+      <p class="text-center text-gray-600 mb-12">
+        只需几分钟，即可完成部署，开始使用你的个人导航收藏系统
+      </p>
+      
+      <!-- Step 1 -->
+      <div class="flex gap-6 mb-8">
+        <div class="step-number">1</div>
+        <div class="flex-1">
+          <h3 class="text-xl font-semibold text-gray-800 mb-2">创建 Cloudflare Worker</h3>
+          <p class="text-gray-600 mb-4">登录 <a href="https://dash.cloudflare.com" target="_blank" class="text-purple-600 hover:underline">Cloudflare Dashboard</a>，进入 Workers & Pages，点击 "Create Worker"</p>
+          <div class="bg-gray-100 rounded-lg p-4">
+            <p class="text-sm text-gray-600">💡 建议命名为 <code class="bg-gray-200 px-2 py-1 rounded">nav-tg</code> 或类似名称</p>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Step 2 -->
+      <div class="flex gap-6 mb-8">
+        <div class="step-number">2</div>
+        <div class="flex-1">
+          <h3 class="text-xl font-semibold text-gray-800 mb-2">创建 KV 命名空间</h3>
+          <p class="text-gray-600 mb-4">在 Workers & Pages → KV 中创建一个新的命名空间</p>
+          <div class="bg-gray-100 rounded-lg p-4 space-y-2">
+            <p class="text-sm text-gray-600">1. 点击 "Create a namespace"</p>
+            <p class="text-sm text-gray-600">2. 命名为 <code class="bg-gray-200 px-2 py-1 rounded">NAV_KV</code></p>
+            <p class="text-sm text-gray-600">3. 在 Worker 的 Settings → Variables → KV Namespace Bindings 中绑定</p>
+            <p class="text-sm text-gray-600">4. Variable name 填写 <code class="bg-gray-200 px-2 py-1 rounded">NAV_KV</code></p>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Step 3 -->
+      <div class="flex gap-6 mb-8">
+        <div class="step-number">3</div>
+        <div class="flex-1">
+          <h3 class="text-xl font-semibold text-gray-800 mb-2">设置环境变量</h3>
+          <p class="text-gray-600 mb-4">在 Worker 的 Settings → Variables → Environment Variables 中添加</p>
+          <div class="bg-gray-100 rounded-lg p-4">
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="border-b border-gray-300">
+                  <th class="text-left py-2 text-gray-700">变量名</th>
+                  <th class="text-left py-2 text-gray-700">说明</th>
+                  <th class="text-left py-2 text-gray-700">类型</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td class="py-2"><code class="bg-gray-200 px-2 py-1 rounded">ADMIN_PASSWORD</code></td>
+                  <td class="py-2 text-gray-600">后台管理密码</td>
+                  <td class="py-2 text-gray-600">Secret（加密）</td>
+                </tr>
+              </tbody>
+            </table>
+            <p class="text-sm text-gray-500 mt-3">💡 只需要这一个环境变量！Bot Token 等配置在后台 UI 中设置</p>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Step 4 -->
+      <div class="flex gap-6 mb-8">
+        <div class="step-number">4</div>
+        <div class="flex-1">
+          <h3 class="text-xl font-semibold text-gray-800 mb-2">部署代码</h3>
+          <p class="text-gray-600 mb-4">复制下方完整代码，粘贴到 Worker 编辑器中，点击 "Save and Deploy"</p>
+          <div class="bg-gray-100 rounded-lg p-4">
+            <p class="text-sm text-gray-600">👇 <a href="#code" class="text-purple-600 hover:underline">点击跳转到代码区域</a>，一键复制完整代码</p>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Step 5 -->
+      <div class="flex gap-6 mb-8">
+        <div class="step-number">5</div>
+        <div class="flex-1">
+          <h3 class="text-xl font-semibold text-gray-800 mb-2">初始化配置</h3>
+          <p class="text-gray-600 mb-4">访问你的 Worker URL 进行初始配置</p>
+          <div class="bg-gray-100 rounded-lg p-4 space-y-3">
+            <p class="text-sm text-gray-600">1. 访问 <code class="bg-gray-200 px-2 py-1 rounded">https://your-worker.workers.dev/admin</code></p>
+            <p class="text-sm text-gray-600">2. 输入你设置的 ADMIN_PASSWORD 登录</p>
+            <p class="text-sm text-gray-600">3. 点击 <strong>⚙️ 系统设置</strong></p>
+            <p class="text-sm text-gray-600">4. 配置网站标题、描述、Logo</p>
+            <p class="text-sm text-gray-600">5. 配置 Bot Token（从 @BotFather 获取）</p>
+            <p class="text-sm text-gray-600">6. 配置允许的用户 ID（从 @userinfobot 获取）</p>
+            <p class="text-sm text-gray-600">7. 点击 <strong>🔗 设置 Webhook</strong></p>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Step 6 -->
+      <div class="flex gap-6">
+        <div class="step-number">6</div>
+        <div class="flex-1">
+          <h3 class="text-xl font-semibold text-gray-800 mb-2">开始使用</h3>
+          <p class="text-gray-600 mb-4">一切就绪！</p>
+          <div class="bg-green-50 border border-green-200 rounded-lg p-4">
+            <p class="text-sm text-green-700">✅ 在 Telegram 中发送 <code class="bg-green-100 px-2 py-1 rounded">/start</code> 测试 Bot</p>
+            <p class="text-sm text-green-700 mt-2">✅ 发送 <code class="bg-green-100 px-2 py-1 rounded">#标签 内容</code> 添加收藏</p>
+            <p class="text-sm text-green-700 mt-2">✅ 访问网站首页查看收藏列表</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Telegram Bot Usage -->
+  <section class="py-20 px-4 bg-gray-50">
+    <div class="max-w-4xl mx-auto">
+      <h2 class="text-3xl font-bold text-center text-gray-800 mb-4">🤖 Telegram Bot 使用说明</h2>
+      <p class="text-center text-gray-600 mb-12">
+        通过 Telegram Bot 快速添加和管理收藏
+      </p>
+      
+      <div class="grid md:grid-cols-2 gap-6">
+        <div class="bg-white rounded-xl p-6 shadow-lg">
+          <h3 class="text-lg font-semibold text-gray-800 mb-4">📝 添加收藏</h3>
+          <ul class="space-y-3 text-gray-600">
+            <li class="flex items-start gap-2">
+              <span class="text-purple-500">•</span>
+              <span>直接发送内容即可添加（自动归类到 #inbox）</span>
+            </li>
+            <li class="flex items-start gap-2">
+              <span class="text-purple-500">•</span>
+              <span>使用 <code class="bg-gray-100 px-2 py-0.5 rounded">#标签</code> 分类</span>
+            </li>
+            <li class="flex items-start gap-2">
+              <span class="text-purple-500">•</span>
+              <span>转发其他消息自动收藏</span>
+            </li>
+            <li class="flex items-start gap-2">
+              <span class="text-purple-500">•</span>
+              <span>支持代码块（用 ``` 包裹）</span>
+            </li>
+          </ul>
+          <div class="mt-4 p-3 bg-gray-100 rounded-lg">
+            <p class="text-sm text-gray-500 mb-1">示例：</p>
+            <code class="text-sm text-gray-700">#tech #ai https://openai.com ChatGPT 官网</code>
+          </div>
+        </div>
+        
+        <div class="bg-white rounded-xl p-6 shadow-lg">
+          <h3 class="text-lg font-semibold text-gray-800 mb-4">📋 命令列表</h3>
+          <ul class="space-y-3 text-gray-600">
+            <li class="flex items-start gap-2">
+              <code class="bg-purple-100 text-purple-700 px-2 py-0.5 rounded">/start</code>
+              <span>打开主菜单</span>
+            </li>
+            <li class="flex items-start gap-2">
+              <code class="bg-purple-100 text-purple-700 px-2 py-0.5 rounded">/menu</code>
+              <span>打开主菜单</span>
+            </li>
+            <li class="flex items-start gap-2">
+              <code class="bg-purple-100 text-purple-700 px-2 py-0.5 rounded">/help</code>
+              <span>查看使用帮助</span>
+            </li>
+          </ul>
+          <div class="mt-4 p-3 bg-gray-100 rounded-lg">
+            <p class="text-sm text-gray-500 mb-1">主菜单功能：</p>
+            <p class="text-sm text-gray-700">➕ 添加 | 🕐 最近 | 📋 所有 | 🏷️ 标签</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ Section -->
+  <section class="py-20 px-4 bg-white">
+    <div class="max-w-4xl mx-auto">
+      <h2 class="text-3xl font-bold text-center text-gray-800 mb-12">❓ 常见问题</h2>
+      
+      <div class="space-y-6">
+        <div class="bg-gray-50 rounded-xl p-6">
+          <h3 class="text-lg font-semibold text-gray-800 mb-2">Q: 需要付费吗？</h3>
+          <p class="text-gray-600">A: 完全免费！Cloudflare Workers 免费套餐提供每天 10 万次请求，KV 提供 1GB 存储，足够个人使用。</p>
+        </div>
+        
+        <div class="bg-gray-50 rounded-xl p-6">
+          <h3 class="text-lg font-semibold text-gray-800 mb-2">Q: 如何获取 Telegram Bot Token？</h3>
+          <p class="text-gray-600">A: 在 Telegram 中搜索 @BotFather，发送 /newbot 命令，按提示创建 Bot 后会获得 Token。</p>
+        </div>
+        
+        <div class="bg-gray-50 rounded-xl p-6">
+          <h3 class="text-lg font-semibold text-gray-800 mb-2">Q: 如何获取我的 Telegram User ID？</h3>
+          <p class="text-gray-600">A: 在 Telegram 中搜索 @userinfobot，发送任意消息即可获得你的 User ID。</p>
+        </div>
+        
+        <div class="bg-gray-50 rounded-xl p-6">
+          <h3 class="text-lg font-semibold text-gray-800 mb-2">Q: 支持多人使用吗？</h3>
+          <p class="text-gray-600">A: 支持！在系统设置中的"允许的用户 ID"填入多个 ID，用英文逗号分隔即可。</p>
+        </div>
+        
+        <div class="bg-gray-50 rounded-xl p-6">
+          <h3 class="text-lg font-semibold text-gray-800 mb-2">Q: 数据安全吗？</h3>
+          <p class="text-gray-600">A: 数据存储在你自己的 Cloudflare KV 中，只有你可以访问。网站有密码保护，Bot 有用户白名单。</p>
+        </div>
+        
+        <div class="bg-gray-50 rounded-xl p-6">
+          <h3 class="text-lg font-semibold text-gray-800 mb-2">Q: 可以自定义域名吗？</h3>
+          <p class="text-gray-600">A: 可以！在 Cloudflare Workers 设置中添加自定义域名即可。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="py-12 px-4 bg-slate-900 text-slate-400">
+    <div class="max-w-4xl mx-auto text-center">
+      <div class="text-4xl mb-4">📚</div>
+      <h3 class="text-2xl font-bold text-white mb-2">NavCollect</h3>
+      <p class="mb-6">个人网站导航收藏系统 v4.2</p>
+      <div class="flex justify-center gap-6 mb-8">
+        <a href="#features" class="hover:text-white transition">功能特性</a>
+        <a href="#deploy" class="hover:text-white transition">部署步骤</a>
+      </div>
+      <p class="text-sm text-slate-500">
+        基于 Cloudflare Workers 构建 | 零成本运行 | 开源免费
+      </p>
+    </div>
+  </footer>
+</body>
+</html>
