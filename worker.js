@@ -1,7 +1,8 @@
+
 /**
  * NavCollect - 个人网站导航收藏系统
- * Cloudflare Worker 单文件实现 v4.3
- * 功能：SPA模式、深浅色主题、后台配置管理、多用户支持、页脚配置、SSE实时更新
+ * Cloudflare Worker 单文件实现 v4.4
+ * 功能：SPA模式、深浅色主题、后台配置管理、多用户支持、页脚配置、频道消息收藏
  * 环境变量：只需要 ADMIN_PASSWORD
  * 其他配置存储在 KV 中
  */
@@ -82,7 +83,79 @@ function generateWebhookSecret() {
   return result;
 }
 
-// JSON 响应工具函数
+// ============== Markdown 处理 ==============
+
+/**
+ * 核心算法：支持嵌套的实体还原
+ */
+function restoreEntities(text, entities, mode = 'std') {
+  if (!text) return "";
+  if (!entities || entities.length === 0) return mode === 'tg' ? escapeV2(text) : text;
+
+  let openTags = Array.from({ length: text.length + 1 }, () => []);
+  let closeTags = Array.from({ length: text.length + 1 }, () => []);
+
+  for (const entity of entities) {
+    const start = entity.offset;
+    const end = entity.offset + entity.length;
+    openTags[start].push(entity);
+    closeTags[end].push(entity);
+  }
+
+  let result = "";
+  let activeStack = [];
+
+  for (let i = 0; i <= text.length; i++) {
+    if (closeTags[i].length > 0) {
+      let toClose = [...closeTags[i]];
+      while (toClose.length > 0) {
+        const entity = activeStack.pop();
+        result += getTag(entity, 'close', mode);
+        const index = toClose.indexOf(entity);
+        if (index !== -1) toClose.splice(index, 1);
+      }
+    }
+    if (openTags[i].length > 0) {
+      const sortedOpen = openTags[i].sort((a, b) => b.length - a.length);
+      for (const entity of sortedOpen) {
+        result += getTag(entity, 'open', mode);
+        activeStack.push(entity);
+      }
+    }
+    if (i < text.length) {
+      result += (mode === 'tg') ? escapeV2(text[i]) : text[i];
+    }
+  }
+  return result;
+}
+
+function getTag(entity, type, mode) {
+  const isOp = type === 'open';
+  const isTg = mode === 'tg';
+  switch (entity.type) {
+    case "bold": return isTg ? "*" : "**";
+    case "italic": return isTg ? "_" : "*";
+    case "underline": return isTg ? "__" : (isOp ? "<u>" : "</u>");
+    case "strikethrough": return isTg ? "~" : "~~";
+    case "spoiler": return isTg ? "||" : (isOp ? "<mark>" : "</mark>");
+    case "code": return "`";
+    case "pre": return isOp ? "```" + (entity.language || "") + "\n" : "```\n";
+    case "text_link": return isOp ? "[" : `](${entity.url})`;
+    case "text_mention": return isOp ? "[" : `](tg://user?id=${entity.user.id})`;
+    case "blockquote":
+    case "expandable_blockquote":
+      if (isTg) return isOp ? "> " : "";
+      return isOp ? "> " : "\n";
+    default: return "";
+  }
+}
+
+function escapeV2(text) {
+  return text ? text.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&') : "";
+}
+
+// ============== JSON 响应工具函数 ==============
+
 function jsonResponse(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), {
     status,
@@ -321,6 +394,7 @@ function getDefaultBotConfig() {
     bot_token: '',
     webhook_secret: '',
     allowed_users: '',
+    allowed_channels: '',
     webhook_url: '',
     webhook_set: false
   };
@@ -367,7 +441,7 @@ async function addItem(env, tags, content, source = 'web', sourceInfo = null, te
     content,
     source,
     source_info: sourceInfo,
-    telegram_msg: telegramMsgInfo, // { chat_id, message_id } 用于关联 Telegram 消息
+    telegram_msg: telegramMsgInfo,
     timestamp: getTimestamp()
   };
   
@@ -423,7 +497,7 @@ async function updateItemByTelegramMsg(env, chatId, messageId, newTags, newConte
     tags: newTags,
     content: newContent,
     timestamp: getTimestamp(),
-    edited: true // 标记为已编辑
+    edited: true
   };
   await saveCollections(env, collections);
   
@@ -508,13 +582,23 @@ async function updateMetadataAfterChange(env, collections, newTags = [], sourceI
   
   // 更新来源列表
   if (sourceInfo) {
-    const sourceKey = sourceInfo.username || sourceInfo.user_id;
+    let sourceKey = '';
+    if (sourceInfo.username) {
+      sourceKey = sourceInfo.username;
+    } else if (sourceInfo.channel_title) {
+      sourceKey = `channel_${sourceInfo.channel_id}`;
+    } else if (sourceInfo.user_id) {
+      sourceKey = `user_${sourceInfo.user_id}`;
+    }
+    
     if (!metadata.source_list) metadata.source_list = [];
     if (sourceKey && !metadata.source_list.find(s => s.key === sourceKey)) {
       metadata.source_list.push({
         key: sourceKey,
-        name: sourceInfo.username || sourceInfo.first_name,
-        user_id: sourceInfo.user_id
+        name: sourceInfo.username || sourceInfo.channel_title || sourceInfo.first_name,
+        user_id: sourceInfo.user_id,
+        channel_id: sourceInfo.channel_id,
+        type: sourceInfo.channel_id ? 'channel' : 'user'
       });
     }
   }
@@ -559,6 +643,20 @@ async function answerCallbackQuery(botToken, callbackQueryId, text = '') {
   });
 }
 
+// ============== 权限验证 ==============
+
+function isAllowedUser(userId, allowedUsers) {
+  if (!allowedUsers) return false;
+  const userIds = allowedUsers.split(',').map(id => id.trim());
+  return userIds.includes(userId.toString());
+}
+
+function isAllowedChannel(channelId, allowedChannels) {
+  if (!allowedChannels) return false;
+  const channelIds = allowedChannels.split(',').map(id => id.trim());
+  return channelIds.includes(channelId.toString());
+}
+
 // ============== Telegram Bot 处理 ==============
 
 async function handleTelegramUpdate(env, update, botConfig) {
@@ -568,9 +666,19 @@ async function handleTelegramUpdate(env, update, botConfig) {
     return handleCallbackQuery(env, update.callback_query, botConfig);
   }
   
-  // 处理编辑的消息 - 自动同步更新 KV
+  // 处理私聊中编辑的消息
   if (update.edited_message) {
     return handleEditedMessage(env, update.edited_message, botConfig);
+  }
+  
+  // 处理频道中编辑的消息
+  if (update.edited_channel_post) {
+    return handleEditedChannelMessage(env, update.edited_channel_post, botConfig);
+  }
+  
+  // 处理频道消息
+  if (update.channel_post) {
+    return handleChannelMessage(env, update.channel_post, botConfig);
   }
   
   if (update.message) {
@@ -580,7 +688,7 @@ async function handleTelegramUpdate(env, update, botConfig) {
   return { ok: true };
 }
 
-// 处理 Telegram 中编辑的消息
+// 处理 Telegram 私聊中编辑的消息
 async function handleEditedMessage(env, message, botConfig) {
   const chatId = message.chat.id;
   const messageId = message.message_id;
@@ -590,38 +698,22 @@ async function handleEditedMessage(env, message, botConfig) {
   
   // 验证用户权限
   if (!isAllowedUser(userId, botConfig.allowed_users)) {
-    return { ok: true }; // 静默忽略无权限用户的编辑
+    return { ok: true };
   }
   
   // 查找对应的收藏项
   const existingItem = await findItemByTelegramMsg(env, chatId, messageId);
   if (!existingItem) {
-    // 该消息没有对应的收藏，忽略
     console.log('No matching item found for edited message');
     return { ok: true };
   }
   
-  // 提取新内容
+  // 提取新内容并转换为标准 Markdown
   let content = message.text || message.caption || '';
+  const entities = message.entities || message.caption_entities || [];
   
-  // 处理 Telegram entities 中的代码块
-  if (message.entities && message.entities.length > 0) {
-    const sortedEntities = [...message.entities].sort((a, b) => b.offset - a.offset);
-    
-    for (const entity of sortedEntities) {
-      if (entity.type === 'pre') {
-        const lang = entity.language || '';
-        const codeText = content.substring(entity.offset, entity.offset + entity.length);
-        const replacement = '```' + lang + '\n' + codeText + '\n```';
-        content = content.substring(0, entity.offset) + replacement + content.substring(entity.offset + entity.length);
-      } else if (entity.type === 'code') {
-        const codeText = content.substring(entity.offset, entity.offset + entity.length);
-        const replacement = '`' + codeText + '`';
-        content = content.substring(0, entity.offset) + replacement + content.substring(entity.offset + entity.length);
-      } else if (entity.type === 'text_link' && entity.url) {
-        content += '\n' + entity.url;
-      }
-    }
+  if (entities.length > 0) {
+    content = restoreEntities(content, entities, 'std');
   }
   
   if (!content.trim()) {
@@ -631,13 +723,12 @@ async function handleEditedMessage(env, message, botConfig) {
   // 解析标签
   const tags = parseTags(content);
   const cleanContent = tags.length > 0 ? removeTagsFromContent(content) : content;
-  const finalTags = tags.length > 0 ? tags : existingItem.tags; // 保留原标签如果没有新标签
+  const finalTags = tags.length > 0 ? tags : existingItem.tags;
   
   // 更新收藏
   const updatedItem = await updateItemByTelegramMsg(env, chatId, messageId, finalTags, cleanContent);
   
   if (updatedItem) {
-    // 发送更新通知
     const tagsText = finalTags.map(t => `#${t}`).join(' ');
     const previewContent = cleanContent.substring(0, 60).replace(/\n/g, ' ');
     
@@ -658,12 +749,119 @@ async function handleEditedMessage(env, message, botConfig) {
   return { ok: true };
 }
 
-function isAllowedUser(userId, allowedUsers) {
-  if (!allowedUsers) return false;
-  const userIds = allowedUsers.split(',').map(id => id.trim());
-  return userIds.includes(userId.toString());
+// 处理 Telegram 频道中编辑的消息
+async function handleEditedChannelMessage(env, message, botConfig) {
+  const chatId = message.chat.id;
+  const messageId = message.message_id;
+  
+  console.log('Edited channel post from:', chatId, 'message_id:', messageId);
+  
+  // 验证频道权限
+  if (!isAllowedChannel(chatId.toString(), botConfig.allowed_channels)) {
+    console.log('Channel not allowed:', chatId);
+    return { ok: true };
+  }
+  
+  // 查找对应的收藏项
+  const existingItem = await findItemByTelegramMsg(env, chatId, messageId);
+  if (!existingItem) {
+    console.log('No matching item found for edited channel post');
+    return { ok: true };
+  }
+  
+  // 提取新内容并转换为标准 Markdown
+  let content = message.text || message.caption || '';
+  const entities = message.entities || message.caption_entities || [];
+  
+  if (entities.length > 0) {
+    content = restoreEntities(content, entities, 'std');
+  }
+  
+  if (!content.trim()) {
+    return { ok: true };
+  }
+  
+  // 解析标签
+  const tags = parseTags(content);
+  const cleanContent = tags.length > 0 ? removeTagsFromContent(content) : content;
+  const finalTags = tags.length > 0 ? tags : existingItem.tags;
+  
+  // 更新收藏
+  await updateItemByTelegramMsg(env, chatId, messageId, finalTags, cleanContent);
+  
+  console.log('Channel post updated silently:', messageId);
+  
+  return { ok: true };
 }
 
+// 处理 Telegram 频道消息
+async function handleChannelMessage(env, message, botConfig) {
+  const chatId = message.chat.id;
+  const chatTitle = message.chat.title;
+  
+  console.log('Channel post from:', chatId, 'title:', chatTitle);
+  
+  // 验证频道权限
+  if (!isAllowedChannel(chatId.toString(), botConfig.allowed_channels)) {
+    console.log('Channel not allowed:', chatId);
+    return { ok: true };
+  }
+  
+  // 提取内容并转换为标准 Markdown
+  let content = message.text || message.caption || '';
+  const entities = message.entities || message.caption_entities || [];
+  
+  if (entities.length > 0) {
+    content = restoreEntities(content, entities, 'std');
+  }
+  
+  if (!content.trim()) {
+    return { ok: true };
+  }
+  
+  // 解析标签
+  const tags = parseTags(content);
+  const cleanContent = tags.length > 0 ? removeTagsFromContent(content) : content;
+  
+  // 默认标签 + 频道标签
+  const finalTags = tags.length > 0 ? tags : ['channel'];
+  
+  // 添加频道名作为标签
+  if (chatTitle) {
+    const channelTag = chatTitle.toLowerCase()
+      .replace(/[^a-z0-9\u4e00-\u9fa5]/g, '_')
+      .replace(/_+/g, '_')
+      .replace(/^_|_$/g, '');
+    if (channelTag) {
+      finalTags.push(`channel_${channelTag}`);
+    }
+  }
+  
+  // 保存 Telegram 消息信息
+  const telegramMsgInfo = {
+    chat_id: chatId,
+    message_id: message.message_id,
+    chat_type: 'channel',
+    channel_title: chatTitle
+  };
+  
+  // 保存来源信息
+  const sourceInfo = {
+    channel_id: chatId.toString(),
+    channel_title: chatTitle,
+    channel_username: message.chat.username || null,
+    type: 'channel'
+  };
+  
+  // 添加收藏项
+  const item = await addItem(env, finalTags, cleanContent, 'telegram_channel', sourceInfo, telegramMsgInfo);
+  
+  console.log('Channel post saved:', item.id);
+  
+  return { ok: true };
+}
+
+// 处理 Telegram 私聊消息
 async function handleTelegramMessage(env, message, botConfig) {
   const chatId = message.chat.id;
   const userId = message.from.id.toString();
@@ -706,6 +904,11 @@ async function handleTelegramMessage(env, message, botConfig) {
       '• 点击 [添加] 后发送内容（支持 #标签）\n' +
       '• 支持转发消息自动收藏\n' +
       '• 支持代码块（用```包裹）\n\n' +
+      '<b>📢 频道收藏</b>\n' +
+      '• 将Bot添加为频道管理员\n' +
+      '• 在频道中发送消息自动收藏\n' +
+      '• 编辑频道消息自动更新收藏\n' +
+      '• 支持 #标签 自动识别\n\n' +
       '<b>✏️ 编辑收藏</b>\n' +
       '• 直接编辑你发送的原消息\n' +
       '• 系统会自动同步更新收藏内容\n' +
@@ -724,6 +927,7 @@ async function sendMainMenu(env, chatId, isEdit = false, messageId = null, botCo
   const text = `📚 <b>NavCollect 导航收藏</b>\n\n` +
     `📊 总收藏: <b>${metadata.total_count || 0}</b> 条\n` +
     `🏷️ 标签数: <b>${(metadata.tag_list || []).length}</b> 个\n` +
+    `📢 频道支持: <b>已启用</b>\n` +
     `🕐 最后更新: ${lastUpdate}\n\n` +
     `请选择操作：`;
   
@@ -770,7 +974,7 @@ async function handleCallbackQuery(env, query, botConfig) {
   if (data === 'act_add') {
     await env.NAV_KV.put(`state_${userId}`, JSON.stringify({ action: 'waiting_add' }), { expirationTtl: 300 });
     return editMessageText(botConfig.bot_token, chatId, messageId,
-      '📝 <b>添加收藏</b>\n\n请直接发送内容，支持：\n• #标签 + 链接/文本\n• 转发其他消息\n• 代码块 (用```包裹)',
+      '📝 <b>添加收藏</b>\n\n请直接发送内容，支持：\n• #标签 + 链接/文本\n• 转发其他消息\n• 代码块 (用```包裹)\n• 在授权频道中发送消息自动收藏',
       { reply_markup: { inline_keyboard: [[{ text: '❌ 取消', callback_data: 'act_menu' }]] } }
     );
   }
@@ -798,7 +1002,8 @@ async function handleCallbackQuery(env, query, botConfig) {
       const content = item.content.length > 60 ? item.content.substring(0, 60) + '...' : item.content;
       const cleanContent = content.replace(/\n/g, ' ').replace(/```[\s\S]*?```/g, '[代码块]');
       const time = formatRelativeTime(item.timestamp);
-      text += `<b>${index + 1}.</b> ${tags}\n${escapeHtml(cleanContent)}\n<i>${time}</i>\n\n`;
+      const sourceIcon = item.source === 'telegram_channel' ? '📢' : '👤';
+      text += `<b>${index + 1}.</b> ${sourceIcon} ${tags}\n${escapeHtml(cleanContent)}\n<i>${time}</i>\n\n`;
       
       buttons.push([
         { text: `📄 查看 ${index + 1}`, callback_data: `view_${item.id}` },
@@ -835,7 +1040,8 @@ async function handleCallbackQuery(env, query, botConfig) {
       const tags = item.tags.map(t => `#${t}`).join(' ');
       const content = item.content.length > 50 ? item.content.substring(0, 50) + '...' : item.content;
       const cleanContent = content.replace(/\n/g, ' ').replace(/```[\s\S]*?```/g, '[代码]');
-      text += `<b>${num}.</b> ${tags}\n${escapeHtml(cleanContent)}\n\n`;
+      const sourceIcon = item.source === 'telegram_channel' ? '📢' : '👤';
+      text += `<b>${num}.</b> ${sourceIcon} ${tags}\n${escapeHtml(cleanContent)}\n\n`;
       
       buttons.push([
         { text: `📄 ${num}`, callback_data: `view_${item.id}` },
@@ -912,7 +1118,8 @@ async function handleCallbackQuery(env, query, botConfig) {
       const content = item.content.length > 50 ? item.content.substring(0, 50) + '...' : item.content;
       const cleanContent = content.replace(/\n/g, ' ').replace(/```[\s\S]*?```/g, '[代码]');
       const time = formatRelativeTime(item.timestamp);
-      text += `<b>${num}.</b> ${escapeHtml(cleanContent)}\n<i>${time}</i>\n\n`;
+      const sourceIcon = item.source === 'telegram_channel' ? '📢' : '👤';
+      text += `<b>${num}.</b> ${sourceIcon} ${escapeHtml(cleanContent)}\n<i>${time}</i>\n\n`;
       
       buttons.push([
         { text: `📄 ${num}`, callback_data: `view_${item.id}` },
@@ -951,6 +1158,7 @@ async function handleCallbackQuery(env, query, botConfig) {
     let sourceText = item.source || 'web';
     if (sourceInfo) {
       if (sourceInfo.username) sourceText = `@${sourceInfo.username}`;
+      else if (sourceInfo.channel_title) sourceText = `📢 ${sourceInfo.channel_title}`;
       else if (sourceInfo.first_name) sourceText = sourceInfo.first_name;
     }
     
@@ -962,8 +1170,9 @@ async function handleCallbackQuery(env, query, botConfig) {
     const text = `📄 <b>收藏详情</b>\n\n` +
       `🏷️ 标签: ${tags}\n` +
       `📥 来源: ${sourceText}\n` +
-      `🕐 时间: ${formatTime(item.timestamp)}\n\n` +
-      `📝 内容:\n${escapeHtml(contentDisplay)}`;
+      `🕐 时间: ${formatTime(item.timestamp)}\n` +
+      (item.edited ? `✏️ 已编辑\n` : '') +
+      `\n📝 内容:\n<pre>${escapeHtml(contentDisplay)}</pre>`;
     
     return editMessageText(botConfig.bot_token, chatId, messageId, text, {
       reply_markup: {
@@ -1041,7 +1250,7 @@ async function handleCallbackQuery(env, query, botConfig) {
     const preview = item.content.length > 200 ? item.content.substring(0, 200) + '...' : item.content;
     
     return editMessageText(botConfig.bot_token, chatId, messageId,
-      `✏️ <b>编辑收藏</b>\n\n当前标签: ${currentTags}\n当前内容:\n<code>${escapeHtml(preview)}</code>\n\n请发送新内容（包含 #标签）`,
+      `✏️ <b>编辑收藏</b>\n\n当前标签: ${currentTags}\n当前内容:\n<pre>${escapeHtml(preview)}</pre>\n\n请发送新内容（包含 #标签）`,
       { reply_markup: { inline_keyboard: [[{ text: '❌ 取消', callback_data: `view_${id}` }]] } }
     );
   }
@@ -1073,24 +1282,10 @@ async function handleAddContent(env, chatId, message, botConfig) {
     };
   }
   
-  // 处理 Telegram entities 中的代码块
-  if (message.entities && message.entities.length > 0) {
-    const sortedEntities = [...message.entities].sort((a, b) => b.offset - a.offset);
-    
-    for (const entity of sortedEntities) {
-      if (entity.type === 'pre') {
-        const lang = entity.language || '';
-        const codeText = content.substring(entity.offset, entity.offset + entity.length);
-        const replacement = '```' + lang + '\n' + codeText + '\n```';
-        content = content.substring(0, entity.offset) + replacement + content.substring(entity.offset + entity.length);
-      } else if (entity.type === 'code') {
-        const codeText = content.substring(entity.offset, entity.offset + entity.length);
-        const replacement = '`' + codeText + '`';
-        content = content.substring(0, entity.offset) + replacement + content.substring(entity.offset + entity.length);
-      } else if (entity.type === 'text_link' && entity.url) {
-        content += '\n' + entity.url;
-      }
-    }
+  // 使用 restoreEntities 转换 Telegram entities 为标准 Markdown
+  const entities = message.entities || message.caption_entities || [];
+  if (entities.length > 0) {
+    content = restoreEntities(content, entities, 'std');
   }
   
   if (!content.trim()) {
@@ -1101,10 +1296,11 @@ async function handleAddContent(env, chatId, message, botConfig) {
   const cleanContent = tags.length > 0 ? removeTagsFromContent(content) : content;
   const finalTags = tags.length > 0 ? tags : ['inbox'];
   
-  // 保存 Telegram 消息信息，用于后续编辑同步
+  // 保存 Telegram 消息信息
   const telegramMsgInfo = {
     chat_id: chatId,
-    message_id: message.message_id
+    message_id: message.message_id,
+    chat_type: 'private'
   };
   
   const item = await addItem(env, finalTags, cleanContent, sourceInfo ? 'telegram_forward' : 'telegram', sourceInfo, telegramMsgInfo);
@@ -1121,7 +1317,7 @@ async function handleAddContent(env, chatId, message, botConfig) {
   return sendMessage(botConfig.bot_token, chatId,
     `✅ <b>已添加！</b>\n\n🏷️ ${tagsText}${sourceText}\n📝 ${escapeHtml(previewContent)}${cleanContent.length > 80 ? '...' : ''}\n\n<i>💡 提示：编辑原消息可自动同步更新</i>`,
     {
-      reply_to_message_id: message.message_id, // 关联原消息，方便用户编辑
+      reply_to_message_id: message.message_id,
       reply_markup: {
         inline_keyboard: [
           [
@@ -1223,7 +1419,9 @@ async function handleApiData(request, env, url) {
   if (source) {
     filteredItems = filteredItems.filter(item => {
       if (!item.source_info) return false;
-      return item.source_info.username === source || item.source_info.user_id === source;
+      return item.source_info.username === source || 
+             item.source_info.user_id === source ||
+             item.source_info.channel_id === source;
     });
   }
   
@@ -1244,48 +1442,6 @@ async function handleApiData(request, env, url) {
       last_updated: metadata.last_updated
     },
     siteConfig
-  });
-}
-
-// SSE 处理 - 使用 TransformStream 实现
-async function handleSSE(request, env) {
-  if (!verifyToken(request, env)) {
-    return errorResponse('Unauthorized', 401);
-  }
-  
-  const metadata = await getMetadata(env);
-  const collections = await getCollections(env);
-  
-  const initialData = {
-    type: 'init',
-    items: [...collections].reverse(),
-    metadata: {
-      total_count: metadata.total_count,
-      tag_list: metadata.tag_list,
-      last_updated: metadata.last_updated
-    },
-    version: metadata.version || 0
-  };
-  
-  const encoder = new TextEncoder();
-  
-  const { readable, writable } = new TransformStream();
-  const writer = writable.getWriter();
-  
-  // 发送初始数据
-  writer.write(encoder.encode(`data: ${JSON.stringify(initialData)}\n\n`));
-  
-  // 由于 Cloudflare Workers 的限制，我们只发送初始数据然后关闭
-  // 客户端会定期重连来获取更新
-  writer.close();
-  
-  return new Response(readable, {
-    headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-      'Access-Control-Allow-Origin': '*'
-    }
   });
 }
 
@@ -1370,13 +1526,10 @@ async function handleApiSiteConfig(request, env) {
       const data = await request.json();
       const currentConfig = await getSiteConfig(env);
       
-      // 处理页脚链接，获取 favicon
       if (data.footer_links) {
         const processedLinks = await Promise.all(data.footer_links.map(async (link) => {
           let favicon = link.favicon || '';
-          // 如果没有自定义图标且有 URL，需要获取 favicon
           if (!link.icon && link.url) {
-            // 使用用户指定的服务，或自动选择
             favicon = await fetchFavicon(link.url, link.favicon_service || null);
           }
           return { 
@@ -1426,6 +1579,9 @@ async function handleApiBotConfig(request, env) {
       if (data.allowed_users !== undefined) {
         currentConfig.allowed_users = data.allowed_users;
       }
+      if (data.allowed_channels !== undefined) {
+        currentConfig.allowed_channels = data.allowed_channels;
+      }
       
       await saveBotConfig(env, currentConfig);
       
@@ -1444,7 +1600,6 @@ async function handleApiBotConfig(request, env) {
   return new Response('Method not allowed', { status: 405 });
 }
 
-
 async function handleApiSetWebhook(request, env) {
   if (!verifyToken(request, env)) {
     return errorResponse('Unauthorized', 401);
@@ -1461,18 +1616,22 @@ async function handleApiSetWebhook(request, env) {
     const webhookSecret = generateWebhookSecret();
     const webhookUrl = `${url.origin}/telegram-webhook`;
     
-    // 设置 Webhook，包含 edited_message 支持
     const webhookResult = await callTelegramApi(botConfig.bot_token, 'setWebhook', {
       url: webhookUrl,
       secret_token: webhookSecret,
-      allowed_updates: ['message', 'callback_query', 'edited_message']
+      allowed_updates: [
+        'message', 
+        'callback_query', 
+        'edited_message',
+        'channel_post',
+        'edited_channel_post'
+      ]
     });
     
     if (!webhookResult.ok) {
       return errorResponse('Webhook 设置失败: ' + (webhookResult.description || '未知错误'));
     }
     
-    // 设置 Bot 命令
     await callTelegramApi(botConfig.bot_token, 'setMyCommands', {
       commands: [
         { command: 'start', description: '启动 / 主菜单' },
@@ -1487,7 +1646,7 @@ async function handleApiSetWebhook(request, env) {
     await saveBotConfig(env, botConfig);
     
     return successResponse({ 
-      message: 'Webhook 设置成功！已启用消息编辑同步功能。',
+      message: 'Webhook 设置成功！已启用私聊和频道消息同步功能。',
       webhook_url: webhookUrl
     });
   } catch (e) {
@@ -1584,6 +1743,10 @@ async function renderSPA(env) {
   <meta property="og:type" content="website">
   <meta name="twitter:card" content="summary">
   <link rel="icon" href="${faviconHref}">
+  <!-- 引入 marked.js 和 highlight.js -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github-dark.min.css">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
@@ -1826,21 +1989,12 @@ async function renderSPA(env) {
     .item-action:hover { background: var(--border); color: var(--text); }
     .item-action.danger:hover { background: #fee2e2; color: var(--danger); }
     
+    /* Markdown 内容样式 */
     .item-content {
       color: var(--text);
       line-height: 1.8;
       word-break: break-word;
     }
-    .item-content a { color: #3b82f6; word-break: break-all; }
-    .item-content .inline-code {
-      background: var(--bg);
-      color: var(--danger);
-      padding: 2px 6px;
-      border-radius: 4px;
-      font-family: 'Monaco', 'Menlo', monospace;
-      font-size: 0.9em;
-    }
-    /* Markdown 样式 */
     .item-content h1, .item-content h2, .item-content h3, 
     .item-content h4, .item-content h5, .item-content h6 {
       margin: 16px 0 8px 0;
@@ -1853,6 +2007,7 @@ async function renderSPA(env) {
     .item-content h4 { font-size: 1.05em; }
     .item-content h5 { font-size: 1em; }
     .item-content h6 { font-size: 0.95em; color: var(--text-secondary); }
+    .item-content p { margin: 8px 0; }
     .item-content strong { font-weight: 600; }
     .item-content em { font-style: italic; }
     .item-content del { text-decoration: line-through; color: var(--text-secondary); }
@@ -1875,29 +2030,6 @@ async function renderSPA(env) {
       border: none;
       border-top: 2px solid var(--border);
     }
-    .item-content .task-item {
-      display: flex;
-      align-items: flex-start;
-      gap: 8px;
-      list-style: none;
-      margin-left: -24px;
-    }
-    .item-content .task-checkbox {
-      width: 18px;
-      height: 18px;
-      border: 2px solid var(--border);
-      border-radius: 4px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      flex-shrink: 0;
-      margin-top: 3px;
-    }
-    .item-content .task-checkbox.checked {
-      background: var(--success);
-      border-color: var(--success);
-      color: white;
-    }
     .item-content table {
       width: 100%;
       border-collapse: collapse;
@@ -1917,6 +2049,36 @@ async function renderSPA(env) {
       max-width: 100%;
       border-radius: 8px;
       margin: 8px 0;
+    }
+    
+    /* 代码块样式 */
+    .item-content pre {
+      background: var(--bg-code);
+      border: 2px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      overflow-x: auto;
+      margin: 16px 0;
+      position: relative;
+    }
+    .item-content pre code {
+      background: transparent;
+      padding: 0;
+      font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+      font-size: 13px;
+      line-height: 1.6;
+      color: #e2e8f0;
+    }
+    .dark .item-content pre code {
+      color: #e2e8f0;
+    }
+    .item-content code:not(pre code) {
+      background: var(--bg);
+      color: var(--danger);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: 'Monaco', 'Menlo', monospace;
+      font-size: 0.9em;
     }
     
     .code-block-wrapper {
@@ -1955,16 +2117,6 @@ async function renderSPA(env) {
       transition: all 0.2s;
     }
     .copy-btn:hover { background: rgba(255,255,255,0.2); color: white; }
-    .code-block {
-      margin: 0;
-      padding: 16px;
-      overflow-x: auto;
-      font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
-      font-size: 13px;
-      line-height: 1.6;
-      color: #a5f3fc;
-      white-space: pre;
-    }
     
     .item-meta {
       display: flex;
@@ -2307,25 +2459,6 @@ async function renderSPA(env) {
       border-top: 1px solid var(--border);
     }
     
-    .sse-status {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 4px 10px;
-      border-radius: 20px;
-      font-size: 12px;
-    }
-    .sse-status.connected { background: rgba(16,185,129,0.1); color: var(--success); }
-    .sse-status.disconnected { background: rgba(245,158,11,0.1); color: var(--warning); }
-    .sse-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: currentColor;
-    }
-    .sse-status.connected .sse-dot { animation: pulse 2s infinite; }
-    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-    
     @media (max-width: 768px) {
       .header-inner { flex-wrap: wrap; }
       .nav-tabs { order: 3; width: 100%; justify-content: center; margin-top: 8px; }
@@ -2365,14 +2498,11 @@ async function renderSPA(env) {
       siteConfig: { title: 'NavCollect', description: '个人网站导航收藏系统', logo_emoji: '📚', footer_links: [] },
       botConfigured: false,
       version: 0,
-      footerItems: [],
-      sseConnected: false
+      footerItems: []
     };
     
     var deleteId = null;
     var footerIdCounter = 0;
-    var eventSource = null;
-    var sseReconnectTimer = null;
     
     // ========== Utilities ==========
     function $(sel) { return document.querySelector(sel); }
@@ -2406,129 +2536,50 @@ async function renderSPA(env) {
       });
     }
     
+    // 使用 marked.js 渲染 Markdown
     function formatContent(text) {
       if (!text) return '';
       
-      // 1. 先提取代码块（避免被其他规则影响）
-      var codeBlocks = [];
-      var result = text.replace(/\`\`\`(\\w*)\\n?([\\s\\S]*?)\`\`\`/g, function(m, lang, code) {
-        codeBlocks.push({ lang: lang || 'text', code: code.trim() });
-        return '〔CODEBLOCK〕' + (codeBlocks.length - 1) + '〔ENDCODEBLOCK〕';
-      });
-      
-      // 2. 提取行内代码
-      var inlineCodes = [];
-      result = result.replace(/\`([^\`]+)\`/g, function(m, code) {
-        inlineCodes.push(code);
-        return '〔INLINECODE〕' + (inlineCodes.length - 1) + '〔ENDINLINECODE〕';
-      });
-      
-      // 3. 提取链接（避免被转义）
-      var links = [];
-      result = result.replace(/\\[([^\\]]+)\\]\\(([^)]+)\\)/g, function(m, text, url) {
-        links.push({ text: text, url: url });
-        return '〔LINK〕' + (links.length - 1) + '〔ENDLINK〕';
-      });
-      
-      // 4. 提取图片
-      var images = [];
-      result = result.replace(/!\\[([^\\]]*)\\]\\(([^)]+)\\)/g, function(m, alt, url) {
-        images.push({ alt: alt, url: url });
-        return '〔IMAGE〕' + (images.length - 1) + '〔ENDIMAGE〕';
-      });
-      
-      // 5. 提取普通 URL（在转义HTML之前，避免被斜体等规则影响）
-      var plainUrls = [];
-      result = result.replace(/(https?:\\/\\/[^\\s<]+)/g, function(m, url) {
-        plainUrls.push(url);
-        return '〔PLAINURL〕' + (plainUrls.length - 1) + '〔ENDPLAINURL〕';
-      });
-      
-      // 6. 转义 HTML
-      result = escapeHtml(result);
-      
-      // 7. 处理标题 (# ## ### 等)
-      result = result.replace(/^(#{1,6})\\s+(.+)$/gm, function(m, hashes, content) {
-        var level = hashes.length;
-        return '<h' + level + '>' + content + '</h' + level + '>';
-      });
-      
-      // 8. 处理粗体 **text** 或 __text__
-      result = result.replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>');
-      result = result.replace(/__(.+?)__/g, '<strong>$1</strong>');
-      
-      // 9. 处理斜体 *text* 或 _text_
-      result = result.replace(/\\*([^*]+)\\*/g, '<em>$1</em>');
-      result = result.replace(/_([^_]+)_/g, '<em>$1</em>');
-      
-      // 10. 处理删除线 ~~text~~
-      result = result.replace(/~~(.+?)~~/g, '<del>$1</del>');
-      
-      // 11. 处理引用块 > text
-      result = result.replace(/^&gt;\\s+(.+)$/gm, '<blockquote><p>$1</p></blockquote>');
-      
-      // 12. 处理分隔线 --- 或 ***
-      result = result.replace(/^(-{3,}|\\*{3,})$/gm, '<hr>');
-      
-      // 13. 处理任务列表 - [ ] 或 - [x]
-      result = result.replace(/^-\\s+\\[([ xX])\\]\\s+(.+)$/gm, function(m, checked, content) {
-        var isChecked = checked.toLowerCase() === 'x';
-        var checkboxClass = isChecked ? 'task-checkbox checked' : 'task-checkbox';
-        var checkmark = isChecked ? '✓' : '';
-        return '<li class="task-item"><span class="' + checkboxClass + '">' + checkmark + '</span><span>' + content + '</span></li>';
-      });
-      
-      // 14. 处理无序列表 - item 或 * item
-      result = result.replace(/^[-*]\\s+(.+)$/gm, '<li>$1</li>');
-      
-      // 15. 处理有序列表 1. item
-      result = result.replace(/^(\\d+)\\.\\s+(.+)$/gm, '<li>$2</li>');
-      
-      // 16. 处理表格
-      result = result.replace(/^\\|(.+)\\|$/gm, function(m, content) {
-        var cells = content.split('|').map(function(c) { return c.trim(); });
-        if (cells.every(function(c) { return /^[-:]+$/.test(c); })) {
-          return '〔TABLESEP〕';
+      // 配置 marked 选项
+      marked.setOptions({
+        gfm: true, // 启用 GitHub Flavored Markdown
+        breaks: true, // 将换行符转换为 <br>
+        headerIds: false, // 不生成 header id
+        highlight: function(code, lang) {
+          if (lang && hljs.getLanguage(lang)) {
+            try {
+              return hljs.highlight(code, { language: lang }).value;
+            } catch (err) {
+              console.error('Highlight error:', err);
+            }
+          }
+          return hljs.highlightAuto(code).value;
         }
-        return '〔TABLEROW〕' + cells.join('〔CELL〕') + '〔ENDROW〕';
       });
       
-      // 17. 换行处理
-      result = result.replace(/\\n/g, '<br>');
+      // 预处理：在 --- 前后添加空行，防止被解析为 Setext 标题
+      // Setext 标题语法：文本后跟 --- 或 === 会被解析为标题
+      text = text.replace(/([^\\n])\\n---\\n/g, '$1\\n\\n---\\n\\n');
+      text = text.replace(/([^\\n])\\n===\\n/g, '$1\\n\\n===\\n\\n');
       
-      // 18. 还原行内代码
-      inlineCodes.forEach(function(code, i) {
-        result = result.replace('〔INLINECODE〕' + i + '〔ENDINLINECODE〕', '<code class="inline-code">' + escapeHtml(code) + '</code>');
+      // 渲染 Markdown
+      var html = marked.parse(text);
+      
+      // 为代码块添加复制按钮
+      html = html.replace(/<pre><code class="([^"]*)">([\\s\\S]*?)<\\/code><\\/pre>/g, function(match, className, codeContent) {
+        var lang = className.replace('language-', '') || 'text';
+        var cleanCode = codeContent.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+        var codeId = 'code-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+        
+        return '<div class="code-block-wrapper"><div class="code-block-header">' +
+          '<span class="code-lang">' + escapeHtml(lang) + '</span>' +
+          '<button class="copy-btn" onclick="copyToClipboard(document.getElementById(\\'' + codeId + '\\').textContent)">📋 复制</button>' +
+          '</div><pre id="' + codeId + '"><code class="' + className + '">' + codeContent + '</code></pre></div>';
       });
       
-      // 19. 还原链接
-      links.forEach(function(link, i) {
-        result = result.replace('〔LINK〕' + i + '〔ENDLINK〕', '<a href="' + escapeHtml(link.url) + '" target="_blank" rel="noopener">' + escapeHtml(link.text) + '</a>');
-      });
-      
-      // 20. 还原图片
-      images.forEach(function(img, i) {
-        result = result.replace('〔IMAGE〕' + i + '〔ENDIMAGE〕', '<img src="' + escapeHtml(img.url) + '" alt="' + escapeHtml(img.alt) + '" loading="lazy">');
-      });
-      
-      // 21. 还原普通URL
-      plainUrls.forEach(function(url, i) {
-        result = result.replace('〔PLAINURL〕' + i + '〔ENDPLAINURL〕', '<a href="' + escapeHtml(url) + '" target="_blank" rel="noopener">' + escapeHtml(url) + '</a>');
-      });
-      
-      // 22. 还原代码块
-      codeBlocks.forEach(function(block, i) {
-        var codeId = 'code-' + Date.now() + '-' + i;
-        var html = '<div class="code-block-wrapper"><div class="code-block-header"><span class="code-lang">' + escapeHtml(block.lang) + '</span><button class="copy-btn" onclick="copyToClipboard(document.getElementById(\\'' + codeId + '\\').textContent)">📋 复制</button></div><pre id="' + codeId + '" class="code-block">' + escapeHtml(block.code) + '</pre></div>';
-        result = result.replace('〔CODEBLOCK〕' + i + '〔ENDCODEBLOCK〕', html);
-      });
-      
-      // 23. 清理多余的 <br>
-      result = result.replace(/<br>(<\\/?(?:h[1-6]|ul|ol|li|blockquote|hr|table|thead|tbody|tr|th|td|div|pre)[^>]*>)/g, '$1');
-      result = result.replace(/(<\\/(?:h[1-6]|ul|ol|li|blockquote|table|thead|tbody|tr|th|td|div|pre)>)<br>/g, '$1');
-      
-      return result;
+      return html;
     }
+    
     function setTheme(theme) {
       state.theme = theme;
       localStorage.setItem('theme', theme);
@@ -2538,94 +2589,6 @@ async function renderSPA(env) {
     
     function toggleTheme() {
       setTheme(state.theme === 'dark' ? 'light' : 'dark');
-    }
-    
-    // ========== SSE ==========
-    function connectSSE() {
-      if (eventSource) {
-        eventSource.close();
-      }
-      if (sseReconnectTimer) {
-        clearTimeout(sseReconnectTimer);
-        sseReconnectTimer = null;
-      }
-      
-      eventSource = new EventSource('/api/sse');
-      
-      eventSource.onopen = function() {
-        state.sseConnected = true;
-        updateSSEStatus();
-      };
-      
-      eventSource.onmessage = function(e) {
-        try {
-          var data = JSON.parse(e.data);
-          if (data.type === 'init' || data.type === 'update') {
-            // 只在版本号变化时才更新数据
-            if (data.version !== state.version) {
-              // 检查是否有弹窗打开
-              var modalOpen = $('#add-modal') && $('#add-modal').classList.contains('show') || 
-                             $('#confirm-modal') && $('#confirm-modal').classList.contains('show');
-              
-              // 更新状态数据
-              state.items = data.items;
-              state.metadata = data.metadata;
-              state.version = data.version;
-              
-              // 只在没有弹窗且在首页时才重新渲染
-              if (!modalOpen && state.page === 'home') {
-                // 只更新数据列表部分，不刷新整个页面
-                var itemsGrid = document.querySelector('.items-grid');
-                if (itemsGrid) {
-                  itemsGrid.innerHTML = renderItemsList(false);
-                }
-                
-                // 更新统计数据
-                var statsBar = document.querySelector('.stats-bar');
-                if (statsBar) {
-                  statsBar.outerHTML = renderStats();
-                }
-                
-                // 更新标签列表
-                var tagsSection = document.querySelector('.tags-section');
-                if (tagsSection) {
-                  tagsSection.outerHTML = renderTagsList(false);
-                }
-              }
-            }
-          }
-        } catch (err) {
-          console.error('SSE parse error:', err);
-        }
-      };
-      
-      eventSource.onerror = function() {
-        state.sseConnected = false;
-        updateSSEStatus();
-        eventSource.close();
-        // 5秒后重连
-        sseReconnectTimer = setTimeout(connectSSE, 5000);
-      };
-    }
-    
-    function disconnectSSE() {
-      if (sseReconnectTimer) {
-        clearTimeout(sseReconnectTimer);
-        sseReconnectTimer = null;
-      }
-      if (eventSource) {
-        eventSource.close();
-        eventSource = null;
-        state.sseConnected = false;
-      }
-    }
-    
-    function updateSSEStatus() {
-      var el = document.getElementById('sse-status');
-      if (el) {
-        el.className = 'sse-status ' + (state.sseConnected ? 'connected' : 'disconnected');
-        el.innerHTML = '<span class="sse-dot"></span>' + (state.sseConnected ? '实时同步' : '已断开');
-      }
     }
     
     // ========== Footer Items Sync ==========
@@ -2649,13 +2612,6 @@ async function renderSPA(env) {
       if (pushState !== false) {
         var url = page === 'home' ? '/' : '/' + page;
         history.pushState({ page: page }, '', url);
-      }
-      
-      // 在首页或管理页面启用 SSE
-      if (page === 'home' || (page === 'admin' && state.isAdmin)) {
-        connectSSE();
-      } else {
-        disconnectSSE();
       }
       
       render();
@@ -2739,7 +2695,9 @@ async function renderSPA(env) {
       if (state.currentSource) {
         items = items.filter(function(item) {
           if (!item.source_info) return false;
-          return item.source_info.username === state.currentSource || item.source_info.user_id === state.currentSource;
+          return item.source_info.username === state.currentSource || 
+                 item.source_info.user_id === state.currentSource ||
+                 item.source_info.channel_id === state.currentSource;
         });
       }
       if (state.currentQ) {
@@ -2769,8 +2727,6 @@ async function renderSPA(env) {
     }
     
     function renderHeader(showSSE) {
-      var sseHtml = showSSE ? '<span id="sse-status" class="sse-status ' + (state.sseConnected ? 'connected' : 'disconnected') + '"><span class="sse-dot"></span>' + (state.sseConnected ? '实时同步' : '已断开') + '</span>' : '';
-      
       return '<header class="header"><div class="container"><div class="header-inner">' +
         '<a class="logo" onclick="navigate(\\'home\\'); clearFilters();">' + renderLogo() + '<span>' + escapeHtml(state.siteConfig.title) + '</span></a>' +
         '<div class="nav-tabs">' +
@@ -2784,7 +2740,6 @@ async function renderSPA(env) {
     
     function renderFooterLinkIcon(link) {
       if (link.icon && link.icon.trim()) {
-        // 检查是否是 URL
         if (link.icon.startsWith('http://') || link.icon.startsWith('https://') || link.icon.startsWith('data:')) {
           return '<img src="' + escapeHtml(link.icon) + '" class="footer-link-favicon" alt="">';
         }
@@ -2817,9 +2772,11 @@ async function renderSPA(env) {
     }
     
     function renderStats() {
+      var channelCount = state.items.filter(function(item) { return item.source === 'telegram_channel'; }).length;
       return '<div class="stats-bar">' +
         '<div class="stat-item"><span class="stat-value">' + (state.metadata.total_count || 0) + '</span><span class="stat-label">总收藏</span></div>' +
         '<div class="stat-item"><span class="stat-value">' + (state.metadata.tag_list || []).length + '</span><span class="stat-label">标签数</span></div>' +
+        '<div class="stat-item"><span class="stat-value">' + channelCount + '</span><span class="stat-label">频道收藏</span></div>' +
         '</div>';
     }
     
@@ -2864,6 +2821,8 @@ async function renderSPA(env) {
         var si = item.source_info;
         if (si.username) {
           sourceHtml = '<button class="source-link" onclick="filterBySource(\\'' + escapeHtml(si.username) + '\\')">@' + escapeHtml(si.username) + '</button>';
+        } else if (si.channel_title) {
+          sourceHtml = '<button class="source-link" onclick="filterBySource(\\'' + escapeHtml(si.channel_id) + '\\')">📢 ' + escapeHtml(si.channel_title) + '</button>';
         } else if (si.first_name) {
           sourceHtml = '<button class="source-link" onclick="filterBySource(\\'' + escapeHtml(si.user_id) + '\\')">' + escapeHtml(si.first_name) + '</button>';
         }
@@ -2900,7 +2859,7 @@ async function renderSPA(env) {
         '<div class="modal-header"><span class="modal-title" id="modal-title">添加收藏</span><button class="modal-close" onclick="hideAddModal()">×</button></div>' +
         '<div class="modal-body"><input type="hidden" id="edit-id">' +
         '<div class="form-group"><label class="form-label">标签（逗号分隔）</label><input type="text" class="form-input" id="input-tags" placeholder="tech, ai, tools"></div>' +
-        '<div class="form-group"><label class="form-label">内容</label><textarea class="form-input form-textarea" id="input-content" placeholder="https://example.com 描述..."></textarea></div>' +
+        '<div class="form-group"><label class="form-label">内容</label><textarea class="form-input form-textarea" id="input-content" placeholder="支持 Markdown 语法"></textarea></div>' +
         '</div>' +
         '<div class="modal-footer"><button class="btn btn-secondary" onclick="hideAddModal()">取消</button><button class="btn btn-primary" onclick="saveItem()">保存</button></div>' +
         '</div></div>' +
@@ -3021,6 +2980,10 @@ async function renderSPA(env) {
             '<div id="bot-status" style="margin-bottom:16px"></div>' +
             '<div class="form-group"><label class="form-label">Bot Token</label><input type="password" class="form-input" id="cfg-bot-token" placeholder="输入新 Token 或保留空白不修改"><div class="form-hint">从 @BotFather 获取</div></div>' +
             '<div class="form-group"><label class="form-label">允许的用户 ID</label><input type="text" class="form-input" id="cfg-allowed-users" placeholder="123456789, 987654321"><div class="form-hint">多个 ID 用英文逗号分隔，可在 @userinfobot 获取你的 ID</div></div>' +
+            '<div class="form-group">' +
+              '<label class="form-label">允许的频道 ID</label>' +
+              '<input type="text" class="form-input" id="cfg-allowed-channels" placeholder="-1001234567890, -1009876543210"><div class="form-hint">多个 ID 用英文逗号分隔，频道 ID 通常是负数，格式为 -100xxxxxxxxxx</div>' +
+            '</div>' +
             '<div class="form-row" style="margin-top:16px">' +
               '<button class="btn btn-primary" onclick="saveBotSettings()">💾 保存 Bot 配置</button>' +
               '<button class="btn btn-success" onclick="setupWebhook()">🔗 设置 Webhook</button>' +
@@ -3030,7 +2993,6 @@ async function renderSPA(env) {
     }
     
     function renderFooterConfigPage() {
-      // 只在首次进入页脚配置页面时同步数据
       if (state.footerItems.length === 0 && state.siteConfig.footer_links && state.siteConfig.footer_links.length > 0) {
         syncFooterItems();
       }
@@ -3102,93 +3064,6 @@ async function renderSPA(env) {
             '</div>' +
           '</div>' +
         '</div>';
-    }
-    
-    function testFaviconForCard(cardId) {
-      var card = document.querySelector('.footer-card[data-id="' + cardId + '"]');
-      if (!card) return;
-      
-      var urlInput = card.querySelector('.footer-url');
-      var url = urlInput.value.trim();
-      
-      if (!url) {
-        showToast('请先输入链接地址');
-        return;
-      }
-      
-      var resultsDiv = document.getElementById('favicon-results-' + cardId);
-      resultsDiv.style.display = 'block';
-      resultsDiv.innerHTML = '<div style="text-align:center;color:var(--text-secondary);">🔄 正在检测各服务可用性...</div>';
-      
-      apiCall('POST', '/api/test-favicon', { url: url }).then(function(data) {
-        if (data.error) {
-          resultsDiv.innerHTML = '<div style="color:var(--danger)">❌ ' + escapeHtml(data.error) + '</div>';
-          return;
-        }
-        
-        var html = '<div style="margin-bottom:8px;font-weight:500;">检测域名: ' + escapeHtml(data.domain) + '</div>';
-        html += '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;">';
-        
-        var results = data.results;
-        var serviceKeys = Object.keys(results);
-        
-        serviceKeys.forEach(function(key) {
-          var result = results[key];
-          var statusColor = result.success ? 'var(--success)' : 'var(--danger)';
-          var statusIcon = result.success ? '✅' : '❌';
-          var sizeInfo = result.success ? ' (' + Math.round(result.size / 1024 * 10) / 10 + 'KB, ' + result.duration + 'ms)' : '';
-          
-          html += '<div style="flex:1;min-width:200px;padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--bg);">';
-          html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">';
-          
-          if (result.success && result.favicon) {
-            html += '<img src="' + result.favicon + '" style="width:20px;height:20px;border-radius:4px;" onerror="this.style.display=\\'none\\'">';
-          }
-          
-          html += '<span style="font-weight:500;">' + escapeHtml(result.name) + '</span>';
-          html += '<span style="color:' + statusColor + '">' + statusIcon + '</span>';
-          html += '</div>';
-          
-          if (result.success) {
-            html += '<div style="font-size:12px;color:var(--text-secondary);">' + sizeInfo + '</div>';
-            html += '<button class="btn btn-secondary" style="margin-top:8px;padding:4px 12px;font-size:12px;" onclick="selectFaviconService(' + cardId + ', \\'' + key + '\\')">使用此服务</button>';
-          } else {
-            html += '<div style="font-size:12px;color:var(--danger);">' + escapeHtml(result.error || '获取失败') + '</div>';
-          }
-          
-          html += '</div>';
-        });
-        
-        html += '</div>';
-        resultsDiv.innerHTML = html;
-        
-      }).catch(function(err) {
-        resultsDiv.innerHTML = '<div style="color:var(--danger)">❌ 检测失败: ' + escapeHtml(err.message) + '</div>';
-      });
-    }
-    
-    function selectFaviconService(cardId, serviceKey) {
-      var card = document.querySelector('.footer-card[data-id="' + cardId + '"]');
-      if (!card) return;
-      
-      var select = card.querySelector('.footer-favicon-service');
-      if (select) {
-        select.value = serviceKey;
-      }
-      
-      // 更新 state 中的数据
-      var item = state.footerItems.find(function(i) { return i.id === cardId; });
-      if (item) {
-        item.favicon_service = serviceKey;
-      }
-      
-      showToast('已选择 ' + serviceKey + ' 服务');
-      
-      // 隐藏检测结果
-      var resultsDiv = document.getElementById('favicon-results-' + cardId);
-      if (resultsDiv) {
-        resultsDiv.style.display = 'none';
-      }
     }
     
     function renderFooterPreview() {
@@ -3393,6 +3268,7 @@ async function renderSPA(env) {
     function loadBotConfigForEdit() {
       fetch('/api/bot-config').then(function(res) { return res.json(); }).then(function(config) {
         $('#cfg-allowed-users').value = config.allowed_users || '';
+        $('#cfg-allowed-channels').value = config.allowed_channels || '';
         var statusHtml = '';
         if (config.bot_token) {
           statusHtml += '<span class="status-badge success">✓ Token 已配置</span> ';
@@ -3409,7 +3285,10 @@ async function renderSPA(env) {
     }
     
     function saveBotSettings() {
-      var config = { allowed_users: $('#cfg-allowed-users').value };
+      var config = { 
+        allowed_users: $('#cfg-allowed-users').value,
+        allowed_channels: $('#cfg-allowed-channels').value
+      };
       var token = $('#cfg-bot-token').value.trim();
       if (token) config.bot_token = token;
       showLoading();
@@ -3430,7 +3309,7 @@ async function renderSPA(env) {
       apiCall('POST', '/api/set-webhook', {}).then(function(data) {
         hideLoading();
         if (data.success) {
-          showToast('Webhook 设置成功！');
+          showToast('Webhook 设置成功！已启用私聊和频道消息同步功能。');
           loadBotConfigForEdit();
         } else {
           showToast(data.error || 'Webhook 设置失败');
@@ -3649,7 +3528,6 @@ async function renderSPA(env) {
         state.page = 'admin';
         checkAuth().then(function(data) { 
           state.isAdmin = data.authenticated; 
-          if (state.isAdmin) connectSSE();
           render(); 
         });
       } else if (path === '/tags' || path === '/tags/') {
@@ -3663,7 +3541,6 @@ async function renderSPA(env) {
         checkAuth().then(function(data) { state.isAdmin = data.authenticated; render(); });
       } else {
         state.page = 'home';
-        connectSSE(); // 首页启动 SSE
         render();
       }
       
@@ -3680,9 +3557,6 @@ async function renderSPA(env) {
         else state.page = 'home';
         render();
       });
-      
-      // 页面卸载时断开 SSE
-      window.addEventListener('beforeunload', disconnectSSE);
     }
     
     init();
@@ -3719,11 +3593,6 @@ export default {
             'Set-Cookie': 'admin_token=; Path=/; Max-Age=0'
           }
         });
-      }
-      
-      // SSE 端点
-      if (path === '/api/sse' && method === 'GET') {
-        return handleSSE(request, env);
       }
       
       // API 路由
