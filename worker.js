@@ -313,7 +313,9 @@ async function fetchFavicon(url, preferredService = null) {
 
 async function getCollections(env) {
   try {
-    const data = await env.NAV_KV.get('collections', 'json');
+    // 使用 cacheTtl: 60 秒，减少延迟
+    // 这会让 KV 优先从源读取而不是边缘缓存
+    const data = await env.NAV_KV.get('collections', { type: 'json', cacheTtl: 60 });
     return data || [];
   } catch (e) {
     console.error('getCollections error:', e);
@@ -323,7 +325,10 @@ async function getCollections(env) {
 
 async function saveCollections(env, collections) {
   try {
-    await env.NAV_KV.put('collections', JSON.stringify(collections));
+    // 写入时设置较短的 TTL，加快全球同步
+    await env.NAV_KV.put('collections', JSON.stringify(collections), {
+      expirationTtl: 31536000 // 1 年后过期（实际上永不过期）
+    });
     return true;
   } catch (e) {
     console.error('saveCollections error:', e);
@@ -333,7 +338,8 @@ async function saveCollections(env, collections) {
 
 async function getMetadata(env) {
   try {
-    const data = await env.NAV_KV.get('metadata', 'json');
+    // 同样优化 metadata 读取
+    const data = await env.NAV_KV.get('metadata', { type: 'json', cacheTtl: 60 });
     return data || { total_count: 0, last_updated: null, tag_list: [], source_list: [], version: 0 };
   } catch (e) {
     return { total_count: 0, last_updated: null, tag_list: [], source_list: [], version: 0 };
@@ -351,7 +357,7 @@ async function saveMetadata(env, metadata) {
 
 async function getSiteConfig(env) {
   try {
-    const data = await env.NAV_KV.get('site_config', 'json');
+    const data = await env.NAV_KV.get('site_config', { type: 'json', cacheTtl: 300 });
     return data || getDefaultSiteConfig();
   } catch (e) {
     return getDefaultSiteConfig();
@@ -382,7 +388,7 @@ async function saveSiteConfig(env, config) {
 
 async function getBotConfig(env) {
   try {
-    const data = await env.NAV_KV.get('bot_config', 'json');
+    const data = await env.NAV_KV.get('bot_config', { type: 'json', cacheTtl: 300 });
     return data || getDefaultBotConfig();
   } catch (e) {
     return getDefaultBotConfig();
@@ -412,7 +418,7 @@ async function saveBotConfig(env, config) {
 
 async function getTagIds(env, tag) {
   try {
-    const data = await env.NAV_KV.get(`tags_${tag}`, 'json');
+    const data = await env.NAV_KV.get(`tags_${tag}`, { type: 'json', cacheTtl: 60 });
     return data || [];
   } catch (e) {
     return [];
@@ -433,7 +439,7 @@ async function saveTagIds(env, tag, ids) {
 
 // ============== 数据操作 ==============
 
-async function addItem(env, tags, content, source = 'web', sourceInfo = null, telegramMsgInfo = null) {
+async function addItem(env, tags, content, source = 'web', sourceInfo = null, telegramMsgInfo = null, mediaInfo = null) {
   const id = generateId();
   const item = {
     id,
@@ -442,6 +448,7 @@ async function addItem(env, tags, content, source = 'web', sourceInfo = null, te
     source,
     source_info: sourceInfo,
     telegram_msg: telegramMsgInfo,
+    media: mediaInfo,
     timestamp: getTimestamp()
   };
   
@@ -805,6 +812,12 @@ async function handleChannelMessage(env, message, botConfig) {
     return { ok: true };
   }
   
+  // 处理媒体文件
+  let mediaInfo = null;
+  if (message.photo || message.audio || message.voice || message.document || message.video) {
+    mediaInfo = await processMediaFile(message, botConfig.bot_token, chatId);
+  }
+  
   // 提取内容并转换为标准 Markdown
   let content = message.text || message.caption || '';
   const entities = message.entities || message.caption_entities || [];
@@ -813,7 +826,8 @@ async function handleChannelMessage(env, message, botConfig) {
     content = restoreEntities(content, entities, 'std');
   }
   
-  if (!content.trim()) {
+  // 允许纯媒体消息（无文字）
+  if (!content.trim() && !mediaInfo) {
     return { ok: true };
   }
   
@@ -851,7 +865,7 @@ async function handleChannelMessage(env, message, botConfig) {
   };
   
   // 添加收藏项（保留原文中的标签）
-  const item = await addItem(env, finalTags, content, 'telegram_channel', sourceInfo, telegramMsgInfo);
+  const item = await addItem(env, finalTags, content, 'telegram_channel', sourceInfo, telegramMsgInfo, mediaInfo);
   
   console.log('Channel post saved:', item.id);
   
@@ -874,7 +888,8 @@ async function handleTelegramMessage(env, message, botConfig) {
   const stateKey = `state_${userId}`;
   let state = null;
   try {
-    state = await env.NAV_KV.get(stateKey, 'json');
+    // state 需要即时读取，使用最短的 cacheTtl
+    state = await env.NAV_KV.get(stateKey, { type: 'json', cacheTtl: 10 });
   } catch (e) {
     console.error('Get state error:', e);
   }
@@ -1256,9 +1271,110 @@ async function handleCallbackQuery(env, query, botConfig) {
   return { ok: true };
 }
 
+// 处理媒体文件（图片、音频、文档等）
+async function processMediaFile(message, botToken, chatId) {
+  let fileInfo = null;
+  let mediaType = null;
+  let fileName = null;
+  let fileSize = 0;
+  
+  // 识别媒体类型
+  if (message.photo) {
+    // 获取最大尺寸的图片
+    const photos = message.photo.sort((a, b) => b.file_size - a.file_size);
+    fileInfo = photos[0];
+    mediaType = 'photo';
+    fileSize = fileInfo.file_size || 0;
+  } else if (message.audio) {
+    fileInfo = message.audio;
+    mediaType = 'audio';
+    fileName = fileInfo.file_name || fileInfo.title || 'audio';
+    fileSize = fileInfo.file_size || 0;
+  } else if (message.voice) {
+    fileInfo = message.voice;
+    mediaType = 'voice';
+    fileName = 'voice_message.ogg';
+    fileSize = fileInfo.file_size || 0;
+  } else if (message.video) {
+    fileInfo = message.video;
+    mediaType = 'video';
+    fileName = fileInfo.file_name || 'video';
+    fileSize = fileInfo.file_size || 0;
+  } else if (message.document) {
+    fileInfo = message.document;
+    mediaType = 'document';
+    fileName = fileInfo.file_name || 'document';
+    fileSize = fileInfo.file_size || 0;
+  }
+  
+  if (!fileInfo) return null;
+  
+  const MAX_DOWNLOAD_SIZE = 20 * 1024 * 1024; // 20MB
+  
+  // 如果文件小于 20MB，获取文件 URL
+  let fileUrl = null;
+  let fileBase64 = null;
+  
+  if (fileSize < MAX_DOWNLOAD_SIZE) {
+    try {
+      // 获取文件路径
+      const filePathResponse = await fetch(`https://api.telegram.org/bot${botToken}/getFile?file_id=${fileInfo.file_id}`);
+      const filePathData = await filePathResponse.json();
+      
+      if (filePathData.ok && filePathData.result.file_path) {
+        const filePath = filePathData.result.file_path;
+        
+        // 对于图片和音频，下载并转换为 base64（文件较小）
+        if (mediaType === 'photo' || mediaType === 'audio' || mediaType === 'voice') {
+          try {
+            const fileResponse = await fetch(`https://api.telegram.org/file/bot${botToken}/${filePath}`);
+            const fileBuffer = await fileResponse.arrayBuffer();
+            const base64 = btoa(String.fromCharCode(...new Uint8Array(fileBuffer)));
+            
+            const mimeType = mediaType === 'photo' ? 'image/jpeg' :
+                           mediaType === 'audio' ? (fileInfo.mime_type || 'audio/mpeg') :
+                           mediaType === 'voice' ? 'audio/ogg' :
+                           'application/octet-stream';
+            
+            fileBase64 = `data:${mimeType};base64,${base64}`;
+          } catch (e) {
+            console.error('Download file error:', e);
+          }
+        }
+        // 对于视频和文档，保存 file_id（通过代理访问）
+        // 不转 base64，避免内存问题
+      }
+    } catch (e) {
+      console.error('Get file path error:', e);
+    }
+  }
+  
+  // 生成 Telegram 消息链接
+  let telegramLink = null;
+  if (message.chat && message.chat.username) {
+    telegramLink = `https://t.me/${message.chat.username}/${message.message_id}`;
+  } else {
+    telegramLink = `https://t.me/c/${Math.abs(chatId)}/${message.message_id}`;
+  }
+  
+  return {
+    type: mediaType,
+    fileName: fileName,
+    fileSize: fileSize,
+    fileId: fileInfo.file_id,  // 保存 file_id 而不是直接 URL
+    fileBase64: fileBase64,
+    telegramLink: telegramLink,
+    mimeType: fileInfo.mime_type || null,
+    duration: fileInfo.duration || null,
+    width: fileInfo.width || null,
+    height: fileInfo.height || null
+  };
+}
+
 async function handleAddContent(env, chatId, message, botConfig) {
   let content = message.text || message.caption || '';
   let sourceInfo = null;
+  let mediaInfo = null;
   
   if (message.forward_from) {
     sourceInfo = {
@@ -1280,13 +1396,19 @@ async function handleAddContent(env, chatId, message, botConfig) {
     };
   }
   
+  // 处理媒体文件（图片、音频、文档等）
+  if (message.photo || message.audio || message.voice || message.document || message.video) {
+    mediaInfo = await processMediaFile(message, botConfig.bot_token, chatId);
+  }
+  
   // 使用 restoreEntities 转换 Telegram entities 为标准 Markdown
   const entities = message.entities || message.caption_entities || [];
   if (entities.length > 0) {
     content = restoreEntities(content, entities, 'std');
   }
   
-  if (!content.trim()) {
+  // 允许纯媒体消息（无文字）
+  if (!content.trim() && !mediaInfo) {
     return sendMessage(botConfig.bot_token, chatId, '❌ 内容不能为空');
   }
   
@@ -1300,7 +1422,7 @@ async function handleAddContent(env, chatId, message, botConfig) {
     chat_type: 'private'
   };
   
-  const item = await addItem(env, finalTags, content, sourceInfo ? 'telegram_forward' : 'telegram', sourceInfo, telegramMsgInfo);
+  const item = await addItem(env, finalTags, content, sourceInfo ? 'telegram_forward' : 'telegram', sourceInfo, telegramMsgInfo, mediaInfo);
   
   const tagsText = finalTags.map(t => `#${t}`).join(' ');
   let sourceText = '';
@@ -1396,6 +1518,52 @@ async function handleAdminLogin(request, env) {
   return errorResponse('密码错误', 401);
 }
 
+// 文件代理 API - 安全地转发 Telegram 文件
+async function handleApiFileProxy(request, env, fileId) {
+  try {
+    // 验证 file_id 格式（基本防护）
+    if (!fileId || typeof fileId !== 'string' || fileId.length > 200) {
+      return new Response('Invalid file ID', { status: 400 });
+    }
+    
+    // 获取 Bot Token
+    const botConfig = await getBotConfig(env);
+    if (!botConfig.bot_token) {
+      return new Response('Bot not configured', { status: 500 });
+    }
+    
+    // 从 Telegram 获取文件路径
+    const filePathResponse = await fetch(`https://api.telegram.org/bot${botConfig.bot_token}/getFile?file_id=${fileId}`);
+    const filePathData = await filePathResponse.json();
+    
+    if (!filePathData.ok || !filePathData.result.file_path) {
+      return new Response('File not found', { status: 404 });
+    }
+    
+    // 下载文件
+    const fileUrl = `https://api.telegram.org/file/bot${botConfig.bot_token}/${filePathData.result.file_path}`;
+    const fileResponse = await fetch(fileUrl);
+    
+    if (!fileResponse.ok) {
+      return new Response('Failed to download file', { status: 502 });
+    }
+    
+    // 转发文件，保留原始的 Content-Type
+    const headers = new Headers();
+    headers.set('Content-Type', fileResponse.headers.get('Content-Type') || 'application/octet-stream');
+    headers.set('Content-Disposition', 'attachment');
+    headers.set('Cache-Control', 'public, max-age=31536000'); // 缓存 1 年
+    
+    return new Response(fileResponse.body, {
+      status: 200,
+      headers: headers
+    });
+  } catch (e) {
+    console.error('File proxy error:', e);
+    return new Response('Internal server error', { status: 500 });
+  }
+}
+
 async function handleApiData(request, env, url) {
   const tag = url.searchParams.get('tag');
   const source = url.searchParams.get('source');
@@ -1438,6 +1606,10 @@ async function handleApiData(request, env, url) {
       last_updated: metadata.last_updated
     },
     siteConfig
+  }, 200, {
+    'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+    'Pragma': 'no-cache',
+    'Expires': '0'
   });
 }
 
@@ -2001,6 +2173,116 @@ async function renderSPA(env) {
     .dark .inline-tag { background: rgba(99,102,241,0.2); }
     .inline-tag:hover { background: var(--primary); color: white; }
     
+    /* 媒体容器样式 */
+    .media-container {
+      margin: 16px 0;
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .media-image {
+      max-width: 100%;
+      height: auto;
+      border-radius: 12px;
+      cursor: pointer;
+      transition: transform 0.2s;
+      display: block;
+    }
+    .media-image:hover {
+      transform: scale(1.02);
+    }
+    .media-audio {
+      padding: 16px;
+      background: var(--bg);
+      border-radius: 12px;
+      border: 1px solid var(--border);
+    }
+    .media-video {
+      background: var(--bg);
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      overflow: hidden;
+    }
+    .video-player {
+      width: 100%;
+      max-height: 500px;
+      display: block;
+      background: #000;
+    }
+    .custom-audio-player {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .audio-play-btn {
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background: var(--primary);
+      color: white;
+      border: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.2s;
+      flex-shrink: 0;
+    }
+    .audio-play-btn:hover {
+      background: #4f46e5;
+      transform: scale(1.05);
+    }
+    .audio-play-btn:active {
+      transform: scale(0.95);
+    }
+    .audio-progress {
+      flex: 1;
+      height: 6px;
+      background: var(--border);
+      border-radius: 3px;
+      cursor: pointer;
+      position: relative;
+      overflow: hidden;
+    }
+    .audio-progress-bar {
+      height: 100%;
+      background: var(--primary);
+      border-radius: 3px;
+      width: 0%;
+      transition: width 0.1s linear;
+    }
+    .audio-time {
+      font-size: 13px;
+      color: var(--text-secondary);
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+      min-width: 85px;
+    }
+    .media-audio audio {
+      display: none;
+    }
+    .media-filename {
+      margin-top: 8px;
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+    .media-file {
+      padding: 12px 16px;
+      background: var(--bg);
+      border-radius: 12px;
+      border: 1px solid var(--border);
+    }
+    .media-link {
+      color: var(--primary);
+      text-decoration: none;
+      font-weight: 500;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .media-link:hover {
+      text-decoration: underline;
+    }
+    
     /* Markdown 内容样式 */
     .item-content {
       color: var(--text);
@@ -2537,6 +2819,80 @@ async function renderSPA(env) {
       return div.innerHTML;
     }
     
+    // ========== 自定义音频播放器控制 ==========
+    function toggleAudioPlay(audioId) {
+      var audio = document.getElementById(audioId);
+      var btn = document.getElementById('btn-' + audioId);
+      
+      if (audio.paused) {
+        // 暂停所有其他音频
+        document.querySelectorAll('audio').forEach(function(a) {
+          if (a.id !== audioId && !a.paused) {
+            a.pause();
+            var otherBtn = document.getElementById('btn-' + a.id);
+            if (otherBtn) {
+              otherBtn.innerHTML = '<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+            }
+          }
+        });
+        
+        audio.play();
+        btn.innerHTML = '<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z"/></svg>';
+      } else {
+        audio.pause();
+        btn.innerHTML = '<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+      }
+    }
+    
+    function seekAudio(event, audioId) {
+      var audio = document.getElementById(audioId);
+      var progressBar = event.currentTarget;
+      var clickX = event.offsetX;
+      var width = progressBar.offsetWidth;
+      var duration = audio.duration;
+      
+      if (duration > 0) {
+        audio.currentTime = (clickX / width) * duration;
+      }
+    }
+    
+    function formatAudioTime(seconds) {
+      if (!isFinite(seconds)) return '0:00';
+      var mins = Math.floor(seconds / 60);
+      var secs = Math.floor(seconds % 60);
+      return mins + ':' + (secs < 10 ? '0' : '') + secs;
+    }
+    
+    // 初始化所有音频播放器的事件监听
+    function initAudioPlayers() {
+      document.querySelectorAll('audio').forEach(function(audio) {
+        var audioId = audio.id;
+        var progressBar = document.getElementById('progress-' + audioId);
+        var timeDisplay = document.getElementById('time-' + audioId);
+        var btn = document.getElementById('btn-' + audioId);
+        
+        if (!progressBar || !timeDisplay) return;
+        
+        // 更新进度和时间
+        audio.addEventListener('timeupdate', function() {
+          var progress = (audio.currentTime / audio.duration) * 100;
+          progressBar.style.width = progress + '%';
+          timeDisplay.textContent = formatAudioTime(audio.currentTime) + ' / ' + formatAudioTime(audio.duration);
+        });
+        
+        // 加载元数据后显示总时长
+        audio.addEventListener('loadedmetadata', function() {
+          timeDisplay.textContent = '0:00 / ' + formatAudioTime(audio.duration);
+        });
+        
+        // 播放结束
+        audio.addEventListener('ended', function() {
+          btn.innerHTML = '<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+          progressBar.style.width = '0%';
+        });
+      });
+    }
+    
     function formatTime(ts) {
       if (!ts) return '';
       return ts.replace('T', ' ').split('+')[0];
@@ -2871,11 +3227,100 @@ async function renderSPA(env) {
       
       var editedBadge = item.edited ? '<span class="edited-badge">✏️ 已编辑</span>' : '';
       
+      // 渲染媒体内容
+      var mediaHtml = '';
+      if (item.media) {
+        mediaHtml = renderMedia(item.media);
+      }
+      
+      // 只在有内容时才显示内容区域
+      var contentHtml = item.content && item.content.trim() 
+        ? '<div class="item-content">' + formatContent(item.content) + '</div>'
+        : '';
+      
       return '<div class="item-card" id="item-' + item.id + '">' +
         '<div class="item-header"><div class="item-tags">' + tags + '</div>' + actions + '</div>' +
-        '<div class="item-content">' + formatContent(item.content) + '</div>' +
+        mediaHtml +
+        contentHtml +
         '<div class="item-meta"><span>📥 ' + sourceHtml + '</span><span>🕐 ' + formatTime(item.timestamp) + '</span>' + editedBadge + '</div>' +
         '</div>';
+    }
+    
+    // 渲染媒体文件
+    function renderMedia(media) {
+      if (!media) return '';
+      
+      var html = '<div class="media-container">';
+      
+      if (media.type === 'photo' && media.fileBase64) {
+        // 图片：直接显示
+        html += '<img src="' + media.fileBase64 + '" alt="图片" class="media-image" onclick="window.open(\\'' + media.fileBase64 + '\\', \\'_blank\\')">';
+      } else if ((media.type === 'audio' || media.type === 'voice') && media.fileBase64) {
+        // 音频：自定义播放器（兼容所有浏览器）
+        var audioId = 'audio-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+        html += '<div class="media-audio">';
+        html += '<div class="custom-audio-player">';
+        html += '<button class="audio-play-btn" onclick="toggleAudioPlay(\\''+audioId+'\\')" id="btn-'+audioId+'">';
+        html += '<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+        html += '</button>';
+        html += '<div class="audio-progress" onclick="seekAudio(event, \\''+audioId+'\\')">';
+        html += '<div class="audio-progress-bar" id="progress-'+audioId+'"></div>';
+        html += '</div>';
+        html += '<span class="audio-time" id="time-'+audioId+'">0:00 / 0:00</span>';
+        html += '</div>';
+        html += '<audio id="'+audioId+'" src="'+media.fileBase64+'" preload="metadata"></audio>';
+        if (media.fileName) {
+          html += '<div class="media-filename">🎵 ' + escapeHtml(media.fileName) + '</div>';
+        }
+        html += '</div>';
+      } else if (media.type === 'video') {
+        if (media.fileSize < 20 * 1024 * 1024 && media.fileId) {
+          // 小视频：通过代理播放
+          html += '<div class="media-video">';
+          html += '<video controls preload="metadata" class="video-player">';
+          html += '<source src="/api/file/' + media.fileId + '" type="' + (media.mimeType || 'video/mp4') + '">';
+          html += '您的浏览器不支持视频播放';
+          html += '</video>';
+          if (media.fileName) {
+            html += '<div class="media-filename" style="padding:12px;">🎬 ' + escapeHtml(media.fileName) + ' (' + formatFileSize(media.fileSize) + ')</div>';
+          }
+          html += '</div>';
+        } else {
+          // 大视频：链接到 Telegram
+          html += '<div class="media-file">';
+          html += '<a href="' + media.telegramLink + '" target="_blank" class="media-link">';
+          html += '🎬 ' + escapeHtml(media.fileName || 'video') + ' (' + formatFileSize(media.fileSize) + ')';
+          html += '</a>';
+          html += '</div>';
+        }
+      } else if (media.type === 'document') {
+        // 文档：显示文件名和大小
+        html += '<div class="media-file">';
+        if (media.fileSize < 20 * 1024 * 1024 && media.fileId) {
+          // 小文件：通过代理下载
+          html += '<a href="/api/file/' + media.fileId + '" target="_blank" class="media-link" download>';
+          html += '📎 ' + escapeHtml(media.fileName || 'document') + ' (' + formatFileSize(media.fileSize) + ')';
+          html += '</a>';
+        } else {
+          // 大文件：链接到 Telegram
+          html += '<a href="' + media.telegramLink + '" target="_blank" class="media-link">';
+          html += '📎 ' + escapeHtml(media.fileName || 'document') + ' (' + formatFileSize(media.fileSize) + ')';
+          html += '</a>';
+        }
+        html += '</div>';
+      }
+      
+      html += '</div>';
+      return html;
+    }
+    
+    // 格式化文件大小
+    function formatFileSize(bytes) {
+      if (!bytes) return '0 B';
+      var k = 1024;
+      var sizes = ['B', 'KB', 'MB', 'GB'];
+      var i = Math.floor(Math.log(bytes) / Math.log(k));
+      return (bytes / Math.pow(k, i)).toFixed(2) + ' ' + sizes[i];
     }
     
     function renderItemsList(isAdmin) {
@@ -2925,6 +3370,11 @@ async function renderSPA(env) {
       }
       
       bindEvents();
+      
+      // 初始化音频播放器
+      setTimeout(function() {
+        initAudioPlayers();
+      }, 100);
     }
     
     function renderHomePage() {
@@ -3233,13 +3683,26 @@ async function renderSPA(env) {
       if (!idToDelete) return;
       hideConfirmModal();
       var card = document.getElementById('item-' + idToDelete);
-      if (card) card.classList.add('removing');
+      if (card) {
+        card.classList.add('removing');
+        // 动画结束后立即移除元素
+        setTimeout(function() {
+          if (card && card.parentNode) {
+            card.parentNode.removeChild(card);
+          }
+        }, 300);
+      }
       apiCall('POST', '/api/delete/' + idToDelete).then(function(data) {
         if (data.success) {
           state.items = state.items.filter(function(i) { return i.id !== idToDelete; });
           state.metadata.total_count = Math.max(0, (state.metadata.total_count || 0) - 1);
           showToast('已删除');
-          setTimeout(function() { render(); }, 300);
+          // 更新计数显示但不重新渲染整个列表
+          var statsBar = document.querySelector('.stats-bar');
+          if (statsBar) {
+            var statValue = statsBar.querySelector('.stat-value');
+            if (statValue) statValue.textContent = state.metadata.total_count;
+          }
         } else {
           showToast(data.error || '删除失败');
           render();
@@ -3632,6 +4095,12 @@ export default {
         return handleApiData(request, env, url);
       }
       
+      // 文件代理 API（安全地下载 Telegram 文件）
+      if (path.startsWith('/api/file/') && method === 'GET') {
+        const fileId = path.replace('/api/file/', '');
+        return handleApiFileProxy(request, env, fileId);
+      }
+      
       if (path === '/api/tags' && method === 'GET') {
         return handleApiTags(env);
       }
@@ -3678,7 +4147,12 @@ export default {
       if (method === 'GET') {
         const html = await renderSPA(env);
         return new Response(html, {
-          headers: { 'Content-Type': 'text/html; charset=utf-8' }
+          headers: { 
+            'Content-Type': 'text/html; charset=utf-8',
+            'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+            'Pragma': 'no-cache',
+            'Expires': '0'
+          }
         });
       }
       
