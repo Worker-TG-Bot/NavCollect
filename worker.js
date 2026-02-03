@@ -139,7 +139,7 @@ function getTag(entity, type, mode) {
     case "strikethrough": return isTg ? "~" : "~~";
     case "spoiler": return isTg ? "||" : (isOp ? "<mark>" : "</mark>");
     case "code": return "`";
-    case "pre": return isOp ? "```" + (entity.language || "") + "\n" : "```\n";
+    case "pre": return isOp ? "```" + (entity.language || "") + "\n" : "\n```";
     case "text_link": return isOp ? "[" : `](${entity.url})`;
     case "text_mention": return isOp ? "[" : `](tg://user?id=${entity.user.id})`;
     case "blockquote":
@@ -720,20 +720,19 @@ async function handleEditedMessage(env, message, botConfig) {
     return { ok: true };
   }
   
-  // 解析标签
+  // 解析标签（提取但不删除原文中的标签）
   const tags = parseTags(content);
-  const cleanContent = tags.length > 0 ? removeTagsFromContent(content) : content;
   const finalTags = tags.length > 0 ? tags : existingItem.tags;
   
-  // 更新收藏
-  const updatedItem = await updateItemByTelegramMsg(env, chatId, messageId, finalTags, cleanContent);
+  // 更新收藏（保留原文中的标签）
+  const updatedItem = await updateItemByTelegramMsg(env, chatId, messageId, finalTags, content);
   
   if (updatedItem) {
     const tagsText = finalTags.map(t => `#${t}`).join(' ');
-    const previewContent = cleanContent.substring(0, 60).replace(/\n/g, ' ');
+    const previewContent = content.substring(0, 60).replace(/\n/g, ' ');
     
     await sendMessage(botConfig.bot_token, chatId,
-      `🔄 <b>收藏已自动更新！</b>\n\n🏷️ ${tagsText}\n📝 ${escapeHtml(previewContent)}${cleanContent.length > 60 ? '...' : ''}\n\n<i>💡 编辑原消息会自动同步更新</i>`,
+      `🔄 <b>收藏已自动更新！</b>\n\n🏷️ ${tagsText}\n📝 ${escapeHtml(previewContent)}${content.length > 60 ? '...' : ''}\n\n<i>💡 编辑原消息会自动同步更新</i>`,
       {
         reply_to_message_id: messageId,
         reply_markup: {
@@ -781,13 +780,12 @@ async function handleEditedChannelMessage(env, message, botConfig) {
     return { ok: true };
   }
   
-  // 解析标签
+  // 解析标签（提取但不删除原文中的标签）
   const tags = parseTags(content);
-  const cleanContent = tags.length > 0 ? removeTagsFromContent(content) : content;
   const finalTags = tags.length > 0 ? tags : existingItem.tags;
   
-  // 更新收藏
-  await updateItemByTelegramMsg(env, chatId, messageId, finalTags, cleanContent);
+  // 更新收藏（保留原文中的标签）
+  await updateItemByTelegramMsg(env, chatId, messageId, finalTags, content);
   
   console.log('Channel post updated silently:', messageId);
   
@@ -819,9 +817,8 @@ async function handleChannelMessage(env, message, botConfig) {
     return { ok: true };
   }
   
-  // 解析标签
+  // 解析标签（提取但不删除原文中的标签）
   const tags = parseTags(content);
-  const cleanContent = tags.length > 0 ? removeTagsFromContent(content) : content;
   
   // 默认标签 + 频道标签
   const finalTags = tags.length > 0 ? tags : ['channel'];
@@ -853,8 +850,8 @@ async function handleChannelMessage(env, message, botConfig) {
     type: 'channel'
   };
   
-  // 添加收藏项
-  const item = await addItem(env, finalTags, cleanContent, 'telegram_channel', sourceInfo, telegramMsgInfo);
+  // 添加收藏项（保留原文中的标签）
+  const item = await addItem(env, finalTags, content, 'telegram_channel', sourceInfo, telegramMsgInfo);
   
   console.log('Channel post saved:', item.id);
   
@@ -918,6 +915,7 @@ async function handleTelegramMessage(env, message, botConfig) {
     );
   }
   
+  // 所有其他非命令消息都保存
   return handleAddContent(env, chatId, message, botConfig);
 }
 
@@ -1293,7 +1291,6 @@ async function handleAddContent(env, chatId, message, botConfig) {
   }
   
   const tags = parseTags(content);
-  const cleanContent = tags.length > 0 ? removeTagsFromContent(content) : content;
   const finalTags = tags.length > 0 ? tags : ['inbox'];
   
   // 保存 Telegram 消息信息
@@ -1303,7 +1300,7 @@ async function handleAddContent(env, chatId, message, botConfig) {
     chat_type: 'private'
   };
   
-  const item = await addItem(env, finalTags, cleanContent, sourceInfo ? 'telegram_forward' : 'telegram', sourceInfo, telegramMsgInfo);
+  const item = await addItem(env, finalTags, content, sourceInfo ? 'telegram_forward' : 'telegram', sourceInfo, telegramMsgInfo);
   
   const tagsText = finalTags.map(t => `#${t}`).join(' ');
   let sourceText = '';
@@ -1312,10 +1309,10 @@ async function handleAddContent(env, chatId, message, botConfig) {
     else if (sourceInfo.first_name) sourceText = `\n📥 转发自: ${sourceInfo.first_name}`;
   }
   
-  const previewContent = cleanContent.substring(0, 80).replace(/\n/g, ' ').replace(/```[\s\S]*?```/g, '[代码块]');
+  const previewContent = content.substring(0, 80).replace(/\n/g, ' ').replace(/```[\s\S]*?```/g, '[代码块]');
   
   return sendMessage(botConfig.bot_token, chatId,
-    `✅ <b>已添加！</b>\n\n🏷️ ${tagsText}${sourceText}\n📝 ${escapeHtml(previewContent)}${cleanContent.length > 80 ? '...' : ''}\n\n<i>💡 提示：编辑原消息可自动同步更新</i>`,
+    `✅ <b>已添加！</b>\n\n🏷️ ${tagsText}${sourceText}\n📝 ${escapeHtml(previewContent)}${content.length > 80 ? '...' : ''}\n\n<i>💡 提示：编辑原消息可自动同步更新</i>`,
     {
       reply_to_message_id: message.message_id,
       reply_markup: {
@@ -1342,10 +1339,9 @@ async function handleEditContent(env, chatId, message, itemId, botConfig) {
   }
   
   const tags = parseTags(content);
-  const cleanContent = tags.length > 0 ? removeTagsFromContent(content) : content;
   const finalTags = tags.length > 0 ? tags : ['inbox'];
   
-  const item = await editItem(env, itemId, finalTags, cleanContent);
+  const item = await editItem(env, itemId, finalTags, content);
   
   if (item) {
     return sendMessage(botConfig.bot_token, chatId, '✅ <b>已更新！</b>', {
@@ -1989,6 +1985,22 @@ async function renderSPA(env) {
     .item-action:hover { background: var(--border); color: var(--text); }
     .item-action.danger:hover { background: #fee2e2; color: var(--danger); }
     
+    /* 内容中的内联标签样式 */
+    .inline-tag {
+      display: inline-block;
+      padding: 2px 8px;
+      background: linear-gradient(135deg, #eef2ff, #e0e7ff);
+      color: var(--primary);
+      border-radius: 10px;
+      font-size: 0.9em;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+      margin: 0 2px;
+    }
+    .dark .inline-tag { background: rgba(99,102,241,0.2); }
+    .inline-tag:hover { background: var(--primary); color: white; }
+    
     /* Markdown 内容样式 */
     .item-content {
       color: var(--text);
@@ -2558,14 +2570,34 @@ async function renderSPA(env) {
       });
       
       // 预处理：在 --- 前后添加空行，防止被解析为 Setext 标题
-      // Setext 标题语法：文本后跟 --- 或 === 会被解析为标题
       text = text.replace(/([^\\n])\\n---\\n/g, '$1\\n\\n---\\n\\n');
       text = text.replace(/([^\\n])\\n===\\n/g, '$1\\n\\n===\\n\\n');
       
-      // 渲染 Markdown
+      // 第1步：保护代码块内容，防止其中的 #tag 被转换
+      // 使用 null 字符作为占位符（不会被 Markdown 解析器处理）
+      var codeBlocks = [];
+      var codeBlockIndex = 0;
+      text = text.replace(/\`\`\`([\\s\\S]*?)\`\`\`/g, function(match) {
+        var placeholder = '\\x00CODEBLOCK' + codeBlockIndex + '\\x00';
+        codeBlocks.push(match);
+        codeBlockIndex++;
+        return placeholder;
+      });
+      
+      // 第2步：在 Markdown 源码中转换 #tag（代码块已被保护）
+      text = text.replace(/#([\\w\\u4e00-\\u9fa5]+)/g, function(match, tag) {
+        return '<span class="inline-tag" onclick="filterByTag(\\'' + tag.toLowerCase() + '\\')">' + match + '</span>';
+      });
+      
+      // 第3步：恢复代码块
+      text = text.replace(/\\x00CODEBLOCK(\\d+)\\x00/g, function(match, index) {
+        return codeBlocks[parseInt(index)];
+      });
+      
+      // 第4步：渲染 Markdown
       var html = marked.parse(text);
       
-      // 为代码块添加复制按钮
+      // 第5步：为代码块添加复制按钮
       html = html.replace(/<pre><code class="([^"]*)">([\\s\\S]*?)<\\/code><\\/pre>/g, function(match, className, codeContent) {
         var lang = className.replace('language-', '') || 'text';
         var cleanCode = codeContent.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
