@@ -1324,25 +1324,19 @@ async function processMediaFile(message, botToken, chatId) {
       if (filePathData.ok && filePathData.result.file_path) {
         const filePath = filePathData.result.file_path;
         
-        // 对于图片和音频，下载并转换为 base64（文件较小）
-        if (mediaType === 'photo' || mediaType === 'audio' || mediaType === 'voice') {
+        // 只对图片转换为 base64（即时显示）
+        if (mediaType === 'photo') {
           try {
             const fileResponse = await fetch(`https://api.telegram.org/file/bot${botToken}/${filePath}`);
             const fileBuffer = await fileResponse.arrayBuffer();
             const base64 = btoa(String.fromCharCode(...new Uint8Array(fileBuffer)));
             
-            const mimeType = mediaType === 'photo' ? 'image/jpeg' :
-                           mediaType === 'audio' ? (fileInfo.mime_type || 'audio/mpeg') :
-                           mediaType === 'voice' ? 'audio/ogg' :
-                           'application/octet-stream';
-            
-            fileBase64 = `data:${mimeType};base64,${base64}`;
+            fileBase64 = `data:image/jpeg;base64,${base64}`;
           } catch (e) {
             console.error('Download file error:', e);
           }
         }
-        // 对于视频和文档，保存 file_id（通过代理访问）
-        // 不转 base64，避免内存问题
+        // 语音、音频、视频、文档都使用 file_id（通过代理访问）
       }
     } catch (e) {
       console.error('Get file path error:', e);
@@ -1914,6 +1908,9 @@ async function renderSPA(env) {
   <!-- 引入 marked.js 和 highlight.js -->
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+  <!-- 引入 Video.js -->
+  <link href="https://vjs.zencdn.net/8.10.0/video-js.css" rel="stylesheet">
+  <script src="https://vjs.zencdn.net/8.10.0/video.min.js"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github-dark.min.css">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -2202,11 +2199,25 @@ async function renderSPA(env) {
       border: 1px solid var(--border);
       overflow: hidden;
     }
-    .video-player {
+    /* Video.js 样式定制 */
+    .media-video .video-js {
       width: 100%;
-      max-height: 500px;
-      display: block;
-      background: #000;
+      height: auto;
+    }
+    .media-video .vjs-big-play-button {
+      border-radius: 50%;
+      width: 80px;
+      height: 80px;
+      line-height: 80px;
+      border: none;
+      background: rgba(99, 102, 241, 0.9);
+      top: 50%;
+      left: 50%;
+      margin-top: -40px;
+      margin-left: -40px;
+    }
+    .media-video .vjs-big-play-button:hover {
+      background: rgba(99, 102, 241, 1);
     }
     .custom-audio-player {
       display: flex;
@@ -2893,6 +2904,32 @@ async function renderSPA(env) {
       });
     }
     
+    // ========== 自定义视频播放器控制 ==========
+    
+    function initVideoPlayers() {
+      // 初始化所有 Video.js 播放器
+      document.querySelectorAll('.video-js').forEach(function(videoEl) {
+        if (!videoEl.id || videoEl.classList.contains('vjs-initialized')) return;
+        
+        try {
+          videojs(videoEl.id, {
+            fluid: true,
+            aspectRatio: '16:9',
+            controls: true,
+            preload: 'metadata',
+            playbackRates: [0.5, 0.75, 1, 1.25, 1.5, 2],
+            controlBar: {
+              volumePanel: {
+                inline: false
+              }
+            }
+          });
+        } catch (e) {
+          console.error('Video.js init error:', e);
+        }
+      });
+    }
+    
     function formatTime(ts) {
       if (!ts) return '';
       return ts.replace('T', ' ').split('+')[0];
@@ -3255,9 +3292,10 @@ async function renderSPA(env) {
       if (media.type === 'photo' && media.fileBase64) {
         // 图片：直接显示
         html += '<img src="' + media.fileBase64 + '" alt="图片" class="media-image" onclick="window.open(\\'' + media.fileBase64 + '\\', \\'_blank\\')">';
-      } else if ((media.type === 'audio' || media.type === 'voice') && media.fileBase64) {
-        // 音频：自定义播放器（兼容所有浏览器）
+      } else if (media.type === 'audio' || media.type === 'voice') {
+        // 音频/语音：自定义播放器
         var audioId = 'audio-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+        var audioSrc = media.fileBase64 ? media.fileBase64 : '/api/file/' + media.fileId;
         html += '<div class="media-audio">';
         html += '<div class="custom-audio-player">';
         html += '<button class="audio-play-btn" onclick="toggleAudioPlay(\\''+audioId+'\\')" id="btn-'+audioId+'">';
@@ -3268,21 +3306,21 @@ async function renderSPA(env) {
         html += '</div>';
         html += '<span class="audio-time" id="time-'+audioId+'">0:00 / 0:00</span>';
         html += '</div>';
-        html += '<audio id="'+audioId+'" src="'+media.fileBase64+'" preload="metadata"></audio>';
+        html += '<audio id="'+audioId+'" src="'+audioSrc+'" preload="metadata"></audio>';
         if (media.fileName) {
-          html += '<div class="media-filename">🎵 ' + escapeHtml(media.fileName) + '</div>';
+          html += '<div class="media-filename">' + (media.type === 'voice' ? '🎤' : '🎵') + ' ' + escapeHtml(media.fileName) + '</div>';
         }
         html += '</div>';
       } else if (media.type === 'video') {
         if (media.fileSize < 20 * 1024 * 1024 && media.fileId) {
-          // 小视频：通过代理播放
+          // 小视频：使用 Video.js 播放器
+          var videoId = 'video-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
           html += '<div class="media-video">';
-          html += '<video controls preload="metadata" class="video-player">';
-          html += '<source src="/api/file/' + media.fileId + '" type="' + (media.mimeType || 'video/mp4') + '">';
-          html += '您的浏览器不支持视频播放';
+          html += '<video id="'+videoId+'" class="video-js vjs-default-skin vjs-big-play-centered" controls preload="metadata" data-setup="{}">';
+          html += '<source src="/api/file/'+media.fileId+'" type="'+(media.mimeType || 'video/mp4')+'">';
           html += '</video>';
           if (media.fileName) {
-            html += '<div class="media-filename" style="padding:12px;">🎬 ' + escapeHtml(media.fileName) + ' (' + formatFileSize(media.fileSize) + ')</div>';
+            html += '<div class="media-filename">🎬 ' + escapeHtml(media.fileName) + ' (' + formatFileSize(media.fileSize) + ')</div>';
           }
           html += '</div>';
         } else {
@@ -3371,9 +3409,10 @@ async function renderSPA(env) {
       
       bindEvents();
       
-      // 初始化音频播放器
+      // 初始化音频和视频播放器
       setTimeout(function() {
         initAudioPlayers();
+        initVideoPlayers();
       }, 100);
     }
     
