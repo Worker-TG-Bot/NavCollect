@@ -1876,6 +1876,91 @@ function getFaviconHref(siteConfig) {
   return `data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>${siteConfig.logo_emoji || '📚'}</text></svg>`;
 }
 
+// ========== PWA Support ==========
+async function handleManifest(env) {
+  const siteConfig = await getSiteConfig(env);
+  
+  const manifest = {
+    name: siteConfig.title || 'NavCollect',
+    short_name: siteConfig.title || 'NavCollect',
+    description: siteConfig.description || '个人网站导航收藏系统',
+    start_url: '/',
+    display: 'standalone',
+    background_color: '#ffffff',
+    theme_color: '#6366f1',
+    icons: [
+      {
+        src: siteConfig.logo || '/icon-192.png',
+        sizes: '192x192',
+        type: 'image/png'
+      },
+      {
+        src: siteConfig.logo || '/icon-512.png',
+        sizes: '512x512',
+        type: 'image/png'
+      }
+    ]
+  };
+  
+  return new Response(JSON.stringify(manifest, null, 2), {
+    headers: {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'public, max-age=86400'
+    }
+  });
+}
+
+async function handleServiceWorker() {
+  const sw = `
+// Service Worker for NavCollect PWA
+const CACHE_NAME = 'navcollect-v1';
+const urlsToCache = [
+  '/',
+  '/manifest.json'
+];
+
+self.addEventListener('install', event => {
+  event.waitUntil(
+    caches.open(CACHE_NAME)
+      .then(cache => cache.addAll(urlsToCache))
+  );
+});
+
+self.addEventListener('fetch', event => {
+  event.respondWith(
+    caches.match(event.request)
+      .then(response => {
+        if (response) {
+          return response;
+        }
+        return fetch(event.request);
+      })
+  );
+});
+
+self.addEventListener('activate', event => {
+  event.waitUntil(
+    caches.keys().then(cacheNames => {
+      return Promise.all(
+        cacheNames.map(cacheName => {
+          if (cacheName !== CACHE_NAME) {
+            return caches.delete(cacheName);
+          }
+        })
+      );
+    })
+  );
+});
+`;
+  
+  return new Response(sw, {
+    headers: {
+      'Content-Type': 'application/javascript',
+      'Cache-Control': 'public, max-age=86400'
+    }
+  });
+}
+
 async function renderSPA(env) {
   const siteConfig = await getSiteConfig(env);
   const metadata = await getMetadata(env);
@@ -1904,6 +1989,15 @@ async function renderSPA(env) {
   <meta property="og:description" content="${escapeHtml(siteConfig.description)}">
   <meta property="og:type" content="website">
   <meta name="twitter:card" content="summary">
+  
+  <!-- PWA Meta Tags -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="${escapeHtml(siteConfig.title)}">
+  <meta name="theme-color" content="#6366f1">
+  <link rel="manifest" href="/manifest.json">
+  
   <link rel="icon" href="${faviconHref}">
   <!-- 引入 marked.js 和 highlight.js -->
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
@@ -2403,6 +2497,333 @@ async function renderSPA(env) {
     .empty-state { text-align: center; padding: 80px 20px; color: var(--text-secondary); }
     .empty-icon { font-size: 64px; margin-bottom: 16px; }
     
+    /* 列表控件 */
+    .list-controls {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 16px 20px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+    .sort-controls, .page-size-controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .control-label {
+      font-size: 14px;
+      color: var(--text-secondary);
+      white-space: nowrap;
+    }
+    .control-select {
+      padding: 6px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 14px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .control-select:hover {
+      border-color: var(--primary);
+    }
+    .control-select:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+    }
+    .items-count {
+      font-size: 14px;
+      color: var(--text-secondary);
+      margin-left: auto;
+    }
+    
+    /* 分页 */
+    .pagination {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin-top: 32px;
+      padding: 20px;
+      flex-wrap: wrap;
+    }
+    .page-btn {
+      min-width: 40px;
+      height: 40px;
+      padding: 0 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg-card);
+      color: var(--text);
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .page-btn:hover {
+      border-color: var(--primary);
+      color: var(--primary);
+      transform: translateY(-1px);
+    }
+    .page-btn.active {
+      background: var(--primary);
+      border-color: var(--primary);
+      color: white;
+    }
+    .page-btn.active:hover {
+      transform: none;
+    }
+    .page-ellipsis {
+      color: var(--text-secondary);
+      padding: 0 4px;
+    }
+    
+    /* 图片懒加载 */
+    .lazy-image {
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+    .lazy-loaded {
+      opacity: 1;
+    }
+    
+    /* 工具栏样式 */
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 16px 20px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+    .toolbar-left, .toolbar-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .toolbar-btn {
+      padding: 8px 16px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 14px;
+      cursor: pointer;
+      transition: all 0.2s;
+      white-space: nowrap;
+    }
+    .toolbar-btn:hover {
+      border-color: var(--primary);
+      color: var(--primary);
+      transform: translateY(-1px);
+    }
+    .toolbar-btn.primary {
+      background: var(--primary);
+      border-color: var(--primary);
+      color: white;
+    }
+    .toolbar-btn.primary:hover {
+      background: #4f46e5;
+    }
+    .toolbar-btn.danger {
+      background: #fee;
+      border-color: #fcc;
+      color: #c33;
+    }
+    .toolbar-btn.danger:hover {
+      background: #fcc;
+    }
+    .toolbar-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    
+    /* 导出下拉菜单 */
+    .export-dropdown {
+      position: relative;
+    }
+    .export-menu {
+      display: none;
+      position: absolute;
+      top: 100%;
+      right: 0;
+      margin-top: 8px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: var(--shadow-lg);
+      min-width: 160px;
+      z-index: 100;
+    }
+    .export-dropdown:hover .export-menu {
+      display: block;
+    }
+    .export-menu button {
+      display: block;
+      width: 100%;
+      padding: 10px 16px;
+      border: none;
+      background: transparent;
+      color: var(--text);
+      text-align: left;
+      font-size: 14px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .export-menu button:hover {
+      background: var(--bg);
+    }
+    .export-menu button:first-child {
+      border-radius: 8px 8px 0 0;
+    }
+    .export-menu button:last-child {
+      border-radius: 0 0 8px 8px;
+    }
+    
+    /* 高级筛选面板 */
+    .advanced-filter {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 16px;
+    }
+    .filter-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+    .filter-label {
+      font-size: 14px;
+      color: var(--text-secondary);
+      white-space: nowrap;
+      min-width: 80px;
+    }
+    .filter-select, .filter-input {
+      padding: 8px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 14px;
+      transition: all 0.2s;
+    }
+    .filter-select {
+      min-width: 150px;
+      cursor: pointer;
+    }
+    .filter-input {
+      flex: 1;
+      min-width: 140px;
+    }
+    .filter-select:hover, .filter-input:hover {
+      border-color: var(--primary);
+    }
+    .filter-select:focus, .filter-input:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+    }
+    .filter-separator {
+      color: var(--text-secondary);
+      font-size: 14px;
+    }
+    .filter-actions {
+      display: flex;
+      gap: 12px;
+      justify-content: flex-end;
+      margin-top: 20px;
+    }
+    .filter-btn {
+      padding: 8px 20px;
+      border: 1px solid var(--primary);
+      border-radius: 8px;
+      background: var(--primary);
+      color: white;
+      font-size: 14px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .filter-btn:hover {
+      background: #4f46e5;
+    }
+    .filter-btn.secondary {
+      background: transparent;
+      color: var(--primary);
+    }
+    .filter-btn.secondary:hover {
+      background: rgba(99, 102, 241, 0.1);
+    }
+    
+    /* 批量选择样式 */
+    .item-card.batch-mode {
+      position: relative;
+      padding-left: 50px;
+    }
+    .batch-checkbox {
+      position: absolute;
+      left: 16px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 20px;
+      height: 20px;
+      cursor: pointer;
+    }
+    .item-card.selected {
+      background: rgba(99, 102, 241, 0.05);
+      border-color: var(--primary);
+    }
+    
+    /* 导入预览样式 */
+    .import-preview {
+      margin-top: 20px;
+      padding: 20px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+    .import-preview p {
+      margin-bottom: 12px;
+      color: var(--text);
+    }
+    .import-list {
+      list-style: none;
+      padding: 0;
+      max-height: 300px;
+      overflow-y: auto;
+      margin-bottom: 20px;
+    }
+    .import-list li {
+      padding: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .import-list li:last-child {
+      border-bottom: none;
+    }
+    .import-tags {
+      color: var(--primary);
+      font-size: 13px;
+      margin-bottom: 6px;
+    }
+    .import-content {
+      color: var(--text-secondary);
+      font-size: 14px;
+    }
+    
     .toast {
       position: fixed;
       bottom: 24px;
@@ -2730,9 +3151,76 @@ async function renderSPA(env) {
       .logo-emoji { font-size: 24px; }
       .footer-links { gap: 8px 16px; }
       .footer-link { padding: 6px 10px; font-size: 13px; }
+      
+      /* 移动端工具栏 */
+      .toolbar {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .toolbar-left, .toolbar-right {
+        width: 100%;
+        justify-content: center;
+      }
+      .toolbar-btn {
+        flex: 1;
+        text-align: center;
+      }
+      .export-dropdown {
+        width: 100%;
+      }
+      .export-menu {
+        width: 100%;
+      }
+      
+      /* 移动端筛选 */
+      .filter-row {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .filter-label {
+        min-width: auto;
+      }
+      .filter-select, .filter-input {
+        width: 100%;
+      }
+      .filter-actions {
+        flex-direction: column;
+      }
+      .filter-btn {
+        width: 100%;
+      }
+      
+      /* 移动端分页和控件 */
+      .list-controls { 
+        flex-direction: column; 
+        align-items: stretch;
+        gap: 12px;
+      }
+      .sort-controls, .page-size-controls {
+        justify-content: space-between;
+      }
+      .items-count {
+        text-align: center;
+        margin-left: 0;
+      }
+      .pagination {
+        gap: 4px;
+      }
+      .page-btn {
+        min-width: 36px;
+        height: 36px;
+        padding: 0 8px;
+        font-size: 13px;
+      }
     }
     @media (max-width: 480px) {
       .logo span { max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
+      .control-label, .filter-label {
+        font-size: 13px;
+      }
+      .control-select, .filter-select {
+        font-size: 13px;
+      }
     }
   </style>
 </head>
@@ -2756,7 +3244,20 @@ async function renderSPA(env) {
       siteConfig: { title: 'NavCollect', description: '个人网站导航收藏系统', logo_emoji: '📚', footer_links: [] },
       botConfigured: false,
       version: 0,
-      footerItems: []
+      footerItems: [],
+      // 分页和排序
+      currentPage: 1,
+      itemsPerPage: parseInt(localStorage.getItem('itemsPerPage')) || 20,
+      sortBy: localStorage.getItem('sortBy') || 'time-desc',
+      // 批量操作
+      batchMode: false,
+      selectedIds: [],
+      // 高级筛选
+      advancedFilter: {
+        mediaType: '',     // photo, audio, video, document, none
+        dateFrom: '',
+        dateTo: ''
+      }
     };
     
     var deleteId = null;
@@ -2820,6 +3321,37 @@ async function renderSPA(env) {
           console.error('Plyr video init error:', e);
         }
       });
+    }
+    
+    // 图片懒加载
+    function initLazyLoad() {
+      var lazyImages = document.querySelectorAll('.lazy-image');
+      
+      if ('IntersectionObserver' in window) {
+        var imageObserver = new IntersectionObserver(function(entries) {
+          entries.forEach(function(entry) {
+            if (entry.isIntersecting) {
+              var img = entry.target;
+              img.src = img.dataset.src;
+              img.classList.remove('lazy-image');
+              img.classList.add('lazy-loaded');
+              imageObserver.unobserve(img);
+            }
+          });
+        }, {
+          rootMargin: '50px 0px'  // 提前 50px 开始加载
+        });
+        
+        lazyImages.forEach(function(img) {
+          imageObserver.observe(img);
+        });
+      } else {
+        // 不支持 IntersectionObserver，直接加载所有图片
+        lazyImages.forEach(function(img) {
+          img.src = img.dataset.src;
+          img.classList.remove('lazy-image');
+        });
+      }
     }
     
     function formatTime(ts) {
@@ -2939,6 +3471,7 @@ async function renderSPA(env) {
       state.currentTag = tag;
       state.currentSource = '';
       state.currentQ = '';
+      state.currentPage = 1;
       history.pushState({}, '', tag ? '/?tag=' + encodeURIComponent(tag) : '/');
       render();
     }
@@ -2947,6 +3480,7 @@ async function renderSPA(env) {
       state.currentSource = source;
       state.currentTag = '';
       state.currentQ = '';
+      state.currentPage = 1;
       history.pushState({}, '', '/?source=' + encodeURIComponent(source));
       render();
     }
@@ -2955,6 +3489,7 @@ async function renderSPA(env) {
       state.currentQ = q;
       state.currentTag = '';
       state.currentSource = '';
+      state.currentPage = 1;
       history.pushState({}, '', q ? '/?q=' + encodeURIComponent(q) : '/');
       render();
     }
@@ -2963,7 +3498,366 @@ async function renderSPA(env) {
       state.currentTag = '';
       state.currentSource = '';
       state.currentQ = '';
+      state.currentPage = 1;
       history.pushState({}, '', '/');
+      render();
+    }
+    
+    // ========== 分页和排序控制 ==========
+    function goToPage(page) {
+      state.currentPage = page;
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      render();
+    }
+    
+    function changeSortBy(sortBy) {
+      state.sortBy = sortBy;
+      state.currentPage = 1;
+      localStorage.setItem('sortBy', sortBy);
+      render();
+    }
+    
+    function changePageSize(size) {
+      state.itemsPerPage = size === 'all' ? 'all' : parseInt(size);
+      state.currentPage = 1;
+      localStorage.setItem('itemsPerPage', size);
+      render();
+    }
+    
+    // ========== 批量操作功能 ==========
+    function enterBatchMode() {
+      state.batchMode = true;
+      state.selectedIds = [];
+      render();
+    }
+    
+    function exitBatchMode() {
+      state.batchMode = false;
+      state.selectedIds = [];
+      render();
+    }
+    
+    function toggleItemSelection(id) {
+      var index = state.selectedIds.indexOf(id);
+      if (index > -1) {
+        state.selectedIds.splice(index, 1);
+      } else {
+        state.selectedIds.push(id);
+      }
+      
+      // 只更新 DOM，避免整页重新渲染导致闪烁
+      var card = document.getElementById('item-' + id);
+      if (card) {
+        if (state.selectedIds.indexOf(id) > -1) {
+          card.classList.add('selected');
+        } else {
+          card.classList.remove('selected');
+        }
+      }
+      
+      // 只更新删除按钮的状态
+      updateBatchDeleteButton();
+    }
+    
+    function updateBatchDeleteButton() {
+      var deleteBtn = document.querySelector('.toolbar-btn.danger');
+      if (deleteBtn) {
+        deleteBtn.disabled = state.selectedIds.length === 0;
+        deleteBtn.textContent = '🗑️ 删除(' + state.selectedIds.length + ')';
+      }
+    }
+    
+    function selectAllItems() {
+      var allItems = getFilteredItems();
+      var paginatedItems = getPaginatedItems(allItems);
+      state.selectedIds = paginatedItems.map(function(item) { return item.id; });
+      render();
+    }
+    
+    function deselectAllItems() {
+      state.selectedIds = [];
+      render();
+    }
+    
+    function batchDelete() {
+      if (state.selectedIds.length === 0) return;
+      
+      if (!confirm('确定要删除选中的 ' + state.selectedIds.length + ' 条收藏吗？')) {
+        return;
+      }
+      
+      showLoading();
+      var promises = state.selectedIds.map(function(id) {
+        return apiCall('POST', '/api/delete/' + id);
+      });
+      
+      Promise.all(promises).then(function() {
+        showToast('批量删除成功');
+        state.selectedIds = [];
+        state.batchMode = false;
+        loadData().then(function() {
+          hideLoading();
+          render();
+        });
+      }).catch(function(err) {
+        hideLoading();
+        showToast('批量删除失败');
+      });
+    }
+    
+    // ========== 导出功能 ==========
+    function exportAs(format) {
+      var allItems = getFilteredItems();
+      var filename = 'navcollect_export_' + new Date().toISOString().split('T')[0];
+      
+      if (format === 'json') {
+        exportAsJSON(allItems, filename);
+      } else if (format === 'markdown') {
+        exportAsMarkdown(allItems, filename);
+      } else if (format === 'html') {
+        exportAsHTML(allItems, filename);
+      }
+    }
+    
+    function exportAsJSON(items, filename) {
+      var data = {
+        exportDate: new Date().toISOString(),
+        totalCount: items.length,
+        siteConfig: state.siteConfig,
+        items: items
+      };
+      
+      var blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      downloadFile(blob, filename + '.json');
+      showToast('导出 JSON 成功');
+    }
+    
+    function exportAsMarkdown(items, filename) {
+      var md = '# ' + state.siteConfig.title + ' 导出\\n\\n';
+      md += '导出时间: ' + new Date().toLocaleString('zh-CN') + '\\n\\n';
+      md += '总计: ' + items.length + ' 条收藏\\n\\n';
+      md += '---\\n\\n';
+      
+      items.forEach(function(item) {
+        md += '## ' + (item.content.split('\\n')[0] || '收藏') + '\\n\\n';
+        
+        if (item.tags && item.tags.length > 0) {
+          md += '**标签**: ' + item.tags.map(function(t) { return '#' + t; }).join(' ') + '\\n\\n';
+        }
+        
+        md += item.content + '\\n\\n';
+        
+        if (item.media) {
+          md += '**媒体**: ' + item.media.type;
+          if (item.media.fileName) {
+            md += ' - ' + item.media.fileName;
+          }
+          md += '\\n\\n';
+        }
+        
+        if (item.source_info) {
+          md += '**来源**: ';
+          if (item.source_info.username) {
+            md += '@' + item.source_info.username;
+          } else if (item.source_info.channel_title) {
+            md += item.source_info.channel_title;
+          } else if (item.source_info.first_name) {
+            md += item.source_info.first_name;
+          }
+          md += '\\n\\n';
+        }
+        
+        md += '**时间**: ' + new Date(item.timestamp).toLocaleString('zh-CN') + '\\n\\n';
+        md += '---\\n\\n';
+      });
+      
+      var blob = new Blob([md], { type: 'text/markdown' });
+      downloadFile(blob, filename + '.md');
+      showToast('导出 Markdown 成功');
+    }
+    
+    function exportAsHTML(items, filename) {
+      var html = '<!DOCTYPE html>\\n<html lang="zh-CN">\\n<head>\\n';
+      html += '<meta charset="UTF-8">\\n<meta name="viewport" content="width=device-width, initial-scale=1.0">\\n';
+      html += '<title>' + escapeHtml(state.siteConfig.title) + ' - 导出</title>\\n<style>\\n';
+      html += 'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:800px;margin:40px auto;padding:20px;background:#f5f5f5}';
+      html += '.item{background:white;padding:20px;margin-bottom:20px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}';
+      html += '.tags{margin-bottom:10px}.tag{display:inline-block;background:#e3f2fd;color:#1976d2;padding:4px 12px;border-radius:12px;margin-right:8px;font-size:14px}';
+      html += '.content{line-height:1.6;margin-bottom:10px}.meta{color:#666;font-size:14px}h1{color:#333}';
+      html += '.export-info{background:#fff3cd;padding:15px;border-radius:8px;margin-bottom:20px}';
+      html += '</style>\\n</head>\\n<body>\\n';
+      
+      html += '<h1>' + escapeHtml(state.siteConfig.title) + ' - 导出</h1>\\n';
+      html += '<div class="export-info"><p><strong>导出时间:</strong> ' + new Date().toLocaleString('zh-CN') + '</p>';
+      html += '<p><strong>总计:</strong> ' + items.length + ' 条收藏</p></div>\\n';
+      
+      items.forEach(function(item) {
+        html += '<div class="item">\\n';
+        if (item.tags && item.tags.length > 0) {
+          html += '<div class="tags">';
+          item.tags.forEach(function(tag) {
+            html += '<span class="tag">#' + escapeHtml(tag) + '</span>';
+          });
+          html += '</div>\\n';
+        }
+        html += '<div class="content">' + escapeHtml(item.content).replace(/\\n/g, '<br>') + '</div>\\n';
+        html += '<div class="meta">';
+        if (item.source_info) {
+          html += '<span>📥 ';
+          if (item.source_info.username) {
+            html += '@' + escapeHtml(item.source_info.username);
+          } else if (item.source_info.channel_title) {
+            html += escapeHtml(item.source_info.channel_title);
+          }
+          html += '</span> | ';
+        }
+        html += '<span>🕐 ' + new Date(item.timestamp).toLocaleString('zh-CN') + '</span></div>\\n';
+        html += '</div>\\n';
+      });
+      
+      html += '</body>\\n</html>';
+      
+      var blob = new Blob([html], { type: 'text/html' });
+      downloadFile(blob, filename + '.html');
+      showToast('导出 HTML 成功');
+    }
+    
+    function downloadFile(blob, filename) {
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+    
+    // ========== 导入功能 ==========
+    function showImportModal() {
+      document.getElementById('import-modal').style.display = 'flex';
+    }
+    
+    function hideImportModal() {
+      document.getElementById('import-modal').style.display = 'none';
+      document.getElementById('import-file').value = '';
+      document.getElementById('import-preview').innerHTML = '';
+    }
+    
+    function handleImportFile(event) {
+      var file = event.target.files[0];
+      if (!file) return;
+      
+      if (file.type !== 'application/json') {
+        showToast('请选择 JSON 文件');
+        return;
+      }
+      
+      var reader = new FileReader();
+      reader.onload = function(e) {
+        try {
+          var data = JSON.parse(e.target.result);
+          previewImportData(data);
+        } catch (err) {
+          showToast('JSON 格式错误');
+        }
+      };
+      reader.readAsText(file);
+    }
+    
+    function previewImportData(data) {
+      if (!data.items || !Array.isArray(data.items)) {
+        showToast('无效的导出文件');
+        return;
+      }
+      
+      var preview = '<div class="import-preview">';
+      preview += '<p><strong>导出时间:</strong> ' + (data.exportDate || '未知') + '</p>';
+      preview += '<p><strong>总计:</strong> ' + data.items.length + ' 条</p>';
+      preview += '<p><strong>预览:</strong></p>';
+      preview += '<ul class="import-list">';
+      
+      data.items.slice(0, 5).forEach(function(item) {
+        preview += '<li>';
+        preview += '<div class="import-tags">' + (item.tags || []).map(function(t) { return '#' + t; }).join(' ') + '</div>';
+        preview += '<div class="import-content">' + (item.content || '').substring(0, 100) + '...</div>';
+        preview += '</li>';
+      });
+      
+      if (data.items.length > 5) {
+        preview += '<li>... 还有 ' + (data.items.length - 5) + ' 条</li>';
+      }
+      
+      preview += '</ul>';
+      preview += '<button class="btn btn-primary" onclick="confirmImport()">确认导入</button>';
+      preview += '<button class="btn btn-secondary" onclick="hideImportModal()">取消</button>';
+      preview += '</div>';
+      
+      document.getElementById('import-preview').innerHTML = preview;
+      
+      // 保存到临时状态
+      state.importData = data;
+    }
+    
+    function confirmImport() {
+      if (!state.importData) return;
+      
+      showLoading();
+      
+      var items = state.importData.items;
+      var promises = items.map(function(item) {
+        return apiCall('POST', '/api/add', {
+          content: item.content || '',
+          tags: item.tags || [],
+          source: item.source || 'import',
+          media: item.media || null
+        });
+      });
+      
+      Promise.all(promises).then(function() {
+        showToast('导入成功: ' + items.length + ' 条');
+        state.importData = null;
+        hideImportModal();
+        loadData().then(function() {
+          hideLoading();
+          render();
+        });
+      }).catch(function(err) {
+        hideLoading();
+        showToast('导入失败');
+      });
+    }
+    
+    // ========== 高级筛选功能 ==========
+    function toggleAdvancedFilter() {
+      state.showAdvancedFilter = !state.showAdvancedFilter;
+      render();
+    }
+    
+    function setMediaTypeFilter(type) {
+      state.advancedFilter.mediaType = type;
+    }
+    
+    function setDateFromFilter(date) {
+      state.advancedFilter.dateFrom = date;
+    }
+    
+    function setDateToFilter(date) {
+      state.advancedFilter.dateTo = date;
+    }
+    
+    function applyAdvancedFilter() {
+      state.currentPage = 1;
+      render();
+    }
+    
+    function clearAdvancedFilter() {
+      state.advancedFilter = {
+        mediaType: '',
+        dateFrom: '',
+        dateTo: ''
+      };
+      state.currentPage = 1;
       render();
     }
     
@@ -3006,6 +3900,8 @@ async function renderSPA(env) {
     
     function getFilteredItems() {
       var items = state.items;
+      
+      // 基本筛选
       if (state.currentTag) {
         items = items.filter(function(item) { return item.tags.indexOf(state.currentTag) !== -1; });
       }
@@ -3023,7 +3919,76 @@ async function renderSPA(env) {
           return item.content.toLowerCase().indexOf(q) !== -1 || item.tags.some(function(t) { return t.indexOf(q) !== -1; });
         });
       }
+      
+      // 高级筛选 - 媒体类型
+      if (state.advancedFilter && state.advancedFilter.mediaType) {
+        if (state.advancedFilter.mediaType === 'none') {
+          items = items.filter(function(item) { return !item.media; });
+        } else {
+          items = items.filter(function(item) { 
+            return item.media && item.media.type === state.advancedFilter.mediaType; 
+          });
+        }
+      }
+      
+      // 高级筛选 - 日期范围
+      if (state.advancedFilter && state.advancedFilter.dateFrom) {
+        var fromDate = new Date(state.advancedFilter.dateFrom);
+        items = items.filter(function(item) {
+          return new Date(item.timestamp) >= fromDate;
+        });
+      }
+      if (state.advancedFilter && state.advancedFilter.dateTo) {
+        var toDate = new Date(state.advancedFilter.dateTo);
+        toDate.setHours(23, 59, 59, 999);
+        items = items.filter(function(item) {
+          return new Date(item.timestamp) <= toDate;
+        });
+      }
+      
+      // 排序
+      items = sortItems(items, state.sortBy);
+      
       return items;
+    }
+    
+    function sortItems(items, sortBy) {
+      var sorted = items.slice(); // 复制数组
+      
+      if (sortBy === 'time-desc') {
+        sorted.sort(function(a, b) {
+          return new Date(b.timestamp) - new Date(a.timestamp);
+        });
+      } else if (sortBy === 'time-asc') {
+        sorted.sort(function(a, b) {
+          return new Date(a.timestamp) - new Date(b.timestamp);
+        });
+      } else if (sortBy === 'tags-desc') {
+        sorted.sort(function(a, b) {
+          return b.tags.length - a.tags.length;
+        });
+      } else if (sortBy === 'tags-asc') {
+        sorted.sort(function(a, b) {
+          return a.tags.length - b.tags.length;
+        });
+      }
+      
+      return sorted;
+    }
+    
+    function getPaginatedItems(items) {
+      if (state.itemsPerPage === 'all') {
+        return items;
+      }
+      
+      var start = (state.currentPage - 1) * state.itemsPerPage;
+      var end = start + state.itemsPerPage;
+      return items.slice(start, end);
+    }
+    
+    function getTotalPages(items) {
+      if (state.itemsPerPage === 'all') return 1;
+      return Math.ceil(items.length / state.itemsPerPage);
     }
     
     // ========== Render Helpers ==========
@@ -3167,7 +4132,20 @@ async function renderSPA(env) {
         ? '<div class="item-content">' + formatContent(item.content) + '</div>'
         : '';
       
-      return '<div class="item-card" id="item-' + item.id + '">' +
+      // 批量选择模式的复选框
+      var checkboxHtml = '';
+      var cardClasses = 'item-card';
+      if (state.batchMode) {
+        cardClasses += ' batch-mode';
+        var isSelected = state.selectedIds.indexOf(item.id) > -1;
+        if (isSelected) cardClasses += ' selected';
+        checkboxHtml = '<input type="checkbox" class="batch-checkbox" ' + 
+          (isSelected ? 'checked' : '') + 
+          ' onchange="toggleItemSelection(\\'' + item.id + '\\')">';
+      }
+      
+      return '<div class="' + cardClasses + '" id="item-' + item.id + '">' +
+        checkboxHtml +
         '<div class="item-header"><div class="item-tags">' + tags + '</div>' + actions + '</div>' +
         mediaHtml +
         contentHtml +
@@ -3181,21 +4159,40 @@ async function renderSPA(env) {
       
       var html = '<div class="media-container">';
       
-      if (media.type === 'photo' && media.fileBase64) {
-        // 图片：直接显示
-        html += '<img src="' + media.fileBase64 + '" alt="图片" class="media-image" onclick="window.open(\\'' + media.fileBase64 + '\\', \\'_blank\\')">';
-      } else if (media.type === 'audio' || media.type === 'voice') {
-        // 音频/语音：使用 Plyr 播放器
-        var audioId = 'audio-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
-        var audioSrc = media.fileBase64 ? media.fileBase64 : '/api/file/' + media.fileId;
-        html += '<div class="media-audio">';
-        html += '<audio id="'+audioId+'" class="plyr-audio" controls>';
-        html += '<source src="'+audioSrc+'" type="'+(media.mimeType || 'audio/mpeg')+'">';
-        html += '</audio>';
-        if (media.fileName) {
-          html += '<div class="media-filename">' + (media.type === 'voice' ? '🎤' : '🎵') + ' ' + escapeHtml(media.fileName) + '</div>';
+      if (media.type === 'photo') {
+        if (media.fileBase64) {
+          // 图片：懒加载（< 20MB，已转换为 base64）
+          html += '<img data-src="' + media.fileBase64 + '" alt="图片" class="media-image lazy-image" onclick="window.open(this.src, \\'_blank\\')">';
+        } else {
+          // 大图片：链接到 Telegram（理论上不太可能，Telegram 会压缩）
+          html += '<div class="media-file">';
+          html += '<a href="' + media.telegramLink + '" target="_blank" class="media-link">';
+          html += '📷 ' + escapeHtml(media.fileName || 'image') + ' (' + formatFileSize(media.fileSize) + ')';
+          html += '</a>';
+          html += '</div>';
         }
-        html += '</div>';
+      } else if (media.type === 'audio' || media.type === 'voice') {
+        // 音频/语音：检查文件大小
+        if (media.fileSize < 20 * 1024 * 1024 && (media.fileBase64 || media.fileId)) {
+          // 小音频：使用 Plyr 播放器
+          var audioId = 'audio-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+          var audioSrc = media.fileBase64 ? media.fileBase64 : '/api/file/' + media.fileId;
+          html += '<div class="media-audio">';
+          html += '<audio id="'+audioId+'" class="plyr-audio" controls>';
+          html += '<source src="'+audioSrc+'" type="'+(media.mimeType || 'audio/mpeg')+'">';
+          html += '</audio>';
+          if (media.fileName) {
+            html += '<div class="media-filename">' + (media.type === 'voice' ? '🎤' : '🎵') + ' ' + escapeHtml(media.fileName) + '</div>';
+          }
+          html += '</div>';
+        } else {
+          // 大音频：链接到 Telegram
+          html += '<div class="media-file">';
+          html += '<a href="' + media.telegramLink + '" target="_blank" class="media-link">';
+          html += (media.type === 'voice' ? '🎤' : '🎵') + ' ' + escapeHtml(media.fileName || 'audio') + ' (' + formatFileSize(media.fileSize) + ')';
+          html += '</a>';
+          html += '</div>';
+        }
       } else if (media.type === 'video') {
         if (media.fileSize < 20 * 1024 * 1024 && media.fileId) {
           // 小视频：使用 Plyr 播放器
@@ -3247,11 +4244,155 @@ async function renderSPA(env) {
     }
     
     function renderItemsList(isAdmin) {
-      var items = getFilteredItems();
-      if (items.length === 0) {
-        return '<div class="empty-state"><div class="empty-icon">📭</div><p>暂无收藏</p></div>';
+      var allItems = getFilteredItems();
+      
+      var paginatedItems = allItems.length > 0 ? getPaginatedItems(allItems) : [];
+      var itemsHtml = paginatedItems.length > 0 
+        ? paginatedItems.map(function(item) { return renderItemCard(item, isAdmin); }).join('')
+        : '<div class="empty-state"><div class="empty-icon">📭</div><p>暂无收藏</p>' +
+          (state.advancedFilter.mediaType || state.advancedFilter.dateFrom || state.advancedFilter.dateTo 
+            ? '<p style="color: var(--text-secondary); font-size: 14px;">尝试清除筛选条件</p>'
+            : '') +
+          '</div>';
+      
+      // 工具栏：批量操作和导出
+      var toolbarHtml = '<div class="toolbar">' +
+        '<div class="toolbar-left">';
+      
+      if (isAdmin && allItems.length > 0) {
+        if (!state.batchMode) {
+          toolbarHtml += '<button class="toolbar-btn" onclick="enterBatchMode()">📋 批量操作</button>';
+        } else {
+          toolbarHtml += '<button class="toolbar-btn primary" onclick="exitBatchMode()">✓ 完成</button>' +
+            '<button class="toolbar-btn" onclick="selectAllItems()">全选</button>' +
+            '<button class="toolbar-btn" onclick="deselectAllItems()">取消</button>' +
+            '<button class="toolbar-btn danger" onclick="batchDelete()" ' + (state.selectedIds.length === 0 ? 'disabled' : '') + '>🗑️ 删除(' + state.selectedIds.length + ')</button>';
+        }
       }
-      return items.map(function(item) { return renderItemCard(item, isAdmin); }).join('');
+      
+      toolbarHtml += '</div>' +
+        '<div class="toolbar-right">';
+      
+      if (isAdmin) {
+        toolbarHtml += '<button class="toolbar-btn" onclick="showImportModal()">📤 导入</button>';
+      }
+      
+      toolbarHtml += '<button class="toolbar-btn" onclick="toggleAdvancedFilter()">🔍 ' + (state.showAdvancedFilter ? '隐藏' : '高级') + '筛选</button>';
+      
+      if (isAdmin) {
+        toolbarHtml += '<div class="export-dropdown">' +
+          '<button class="toolbar-btn">📥 导出 ▼</button>' +
+          '<div class="export-menu">' +
+          '<button onclick="exportAs(\\'json\\')">📋 JSON</button>' +
+          '<button onclick="exportAs(\\'markdown\\')">📝 Markdown</button>' +
+          '<button onclick="exportAs(\\'html\\')">🌐 HTML</button>' +
+          '</div>' +
+          '</div>';
+      }
+      
+      toolbarHtml += '</div>' +
+        '</div>';
+      
+      // 高级筛选面板
+      var advancedFilterHtml = '';
+      if (state.showAdvancedFilter) {
+        advancedFilterHtml = '<div class="advanced-filter">' +
+          '<div class="filter-row">' +
+          '<label class="filter-label">媒体类型：</label>' +
+          '<select class="filter-select" onchange="setMediaTypeFilter(this.value)">' +
+          '<option value=""' + (!state.advancedFilter.mediaType ? ' selected' : '') + '>全部</option>' +
+          '<option value="photo"' + (state.advancedFilter.mediaType === 'photo' ? ' selected' : '') + '>📷 图片</option>' +
+          '<option value="audio"' + (state.advancedFilter.mediaType === 'audio' ? ' selected' : '') + '>🎵 音频</option>' +
+          '<option value="voice"' + (state.advancedFilter.mediaType === 'voice' ? ' selected' : '') + '>🎤 语音</option>' +
+          '<option value="video"' + (state.advancedFilter.mediaType === 'video' ? ' selected' : '') + '>🎬 视频</option>' +
+          '<option value="document"' + (state.advancedFilter.mediaType === 'document' ? ' selected' : '') + '>📎 文档</option>' +
+          '<option value="none"' + (state.advancedFilter.mediaType === 'none' ? ' selected' : '') + '>无媒体</option>' +
+          '</select>' +
+          '</div>' +
+          '<div class="filter-row">' +
+          '<label class="filter-label">日期范围：</label>' +
+          '<input type="date" class="filter-input" value="' + (state.advancedFilter.dateFrom || '') + '" onchange="setDateFromFilter(this.value)" placeholder="开始日期">' +
+          '<span class="filter-separator">至</span>' +
+          '<input type="date" class="filter-input" value="' + (state.advancedFilter.dateTo || '') + '" onchange="setDateToFilter(this.value)" placeholder="结束日期">' +
+          '</div>' +
+          '<div class="filter-actions">' +
+          '<button class="filter-btn" onclick="applyAdvancedFilter()">应用筛选</button>' +
+          '<button class="filter-btn secondary" onclick="clearAdvancedFilter()">清除筛选</button>' +
+          '</div>' +
+          '</div>';
+      }
+      
+      // 排序和分页控件
+      var controlsHtml = '<div class="list-controls">' +
+        '<div class="sort-controls">' +
+        '<label class="control-label">排序：</label>' +
+        '<select class="control-select" onchange="changeSortBy(this.value)">' +
+        '<option value="time-desc"' + (state.sortBy === 'time-desc' ? ' selected' : '') + '>最新优先</option>' +
+        '<option value="time-asc"' + (state.sortBy === 'time-asc' ? ' selected' : '') + '>最旧优先</option>' +
+        '<option value="tags-desc"' + (state.sortBy === 'tags-desc' ? ' selected' : '') + '>标签多→少</option>' +
+        '<option value="tags-asc"' + (state.sortBy === 'tags-asc' ? ' selected' : '') + '>标签少→多</option>' +
+        '</select>' +
+        '</div>' +
+        '<div class="page-size-controls">' +
+        '<label class="control-label">每页：</label>' +
+        '<select class="control-select" onchange="changePageSize(this.value)">' +
+        '<option value="20"' + (state.itemsPerPage === 20 ? ' selected' : '') + '>20条</option>' +
+        '<option value="50"' + (state.itemsPerPage === 50 ? ' selected' : '') + '>50条</option>' +
+        '<option value="100"' + (state.itemsPerPage === 100 ? ' selected' : '') + '>100条</option>' +
+        '<option value="all"' + (state.itemsPerPage === 'all' ? ' selected' : '') + '>全部</option>' +
+        '</select>' +
+        '</div>' +
+        '<div class="items-count">共 ' + allItems.length + ' 条</div>' +
+        '</div>';
+      
+      // 分页按钮
+      var paginationHtml = '';
+      if (state.itemsPerPage !== 'all') {
+        var totalPages = getTotalPages(allItems);
+        if (totalPages > 1) {
+          paginationHtml = '<div class="pagination">';
+          
+          // 上一页
+          if (state.currentPage > 1) {
+            paginationHtml += '<button class="page-btn" onclick="goToPage(' + (state.currentPage - 1) + ')">上一页</button>';
+          }
+          
+          // 页码
+          var startPage = Math.max(1, state.currentPage - 2);
+          var endPage = Math.min(totalPages, state.currentPage + 2);
+          
+          if (startPage > 1) {
+            paginationHtml += '<button class="page-btn" onclick="goToPage(1)">1</button>';
+            if (startPage > 2) {
+              paginationHtml += '<span class="page-ellipsis">...</span>';
+            }
+          }
+          
+          for (var i = startPage; i <= endPage; i++) {
+            if (i === state.currentPage) {
+              paginationHtml += '<button class="page-btn active">' + i + '</button>';
+            } else {
+              paginationHtml += '<button class="page-btn" onclick="goToPage(' + i + ')">' + i + '</button>';
+            }
+          }
+          
+          if (endPage < totalPages) {
+            if (endPage < totalPages - 1) {
+              paginationHtml += '<span class="page-ellipsis">...</span>';
+            }
+            paginationHtml += '<button class="page-btn" onclick="goToPage(' + totalPages + ')">' + totalPages + '</button>';
+          }
+          
+          // 下一页
+          if (state.currentPage < totalPages) {
+            paginationHtml += '<button class="page-btn" onclick="goToPage(' + (state.currentPage + 1) + ')">下一页</button>';
+          }
+          
+          paginationHtml += '</div>';
+        }
+      }
+      
+      return toolbarHtml + advancedFilterHtml + controlsHtml + itemsHtml + paginationHtml;
     }
     
     function renderModals() {
@@ -3270,7 +4411,15 @@ async function renderSPA(env) {
         '<div style="display:flex;gap:12px;justify-content:center">' +
           '<button class="btn btn-secondary" onclick="hideConfirmModal()">取消</button>' +
           '<button class="btn btn-danger" onclick="confirmDelete()">删除</button>' +
-        '</div></div></div></div>';
+        '</div></div></div></div>' +
+        '<div id="import-modal" class="modal"><div class="modal-content">' +
+        '<div class="modal-header"><span class="modal-title">导入数据</span><button class="modal-close" onclick="hideImportModal()">×</button></div>' +
+        '<div class="modal-body">' +
+        '<div class="form-group"><label class="form-label">选择导出的 JSON 文件</label>' +
+        '<input type="file" class="form-input" id="import-file" accept=".json" onchange="handleImportFile(event)"></div>' +
+        '<div id="import-preview"></div>' +
+        '</div>' +
+        '</div></div>';
     }
     
     // ========== Render Pages ==========
@@ -3294,9 +4443,10 @@ async function renderSPA(env) {
       
       bindEvents();
       
-      // 初始化 Plyr 播放器
+      // 初始化 Plyr 播放器和懒加载
       setTimeout(function() {
         initPlayers();
+        initLazyLoad();
       }, 100);
     }
     
@@ -3978,6 +5128,19 @@ async function renderSPA(env) {
     }
     
     init();
+    
+    // PWA Service Worker 注册
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function() {
+        navigator.serviceWorker.register('/sw.js')
+          .then(function(registration) {
+            console.log('SW registered:', registration.scope);
+          })
+          .catch(function(err) {
+            console.log('SW registration failed:', err);
+          });
+      });
+    }
   <\/script>
 </body>
 </html>`;
@@ -3992,6 +5155,16 @@ export default {
     const method = request.method;
 
     try {
+      // PWA Manifest
+      if (path === '/manifest.json' && method === 'GET') {
+        return handleManifest(env);
+      }
+      
+      // Service Worker
+      if (path === '/sw.js' && method === 'GET') {
+        return handleServiceWorker();
+      }
+      
       // Telegram Webhook
       if (path === '/telegram-webhook' && method === 'POST') {
         return handleTelegramWebhook(request, env);
