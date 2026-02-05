@@ -437,6 +437,34 @@ async function saveTagIds(env, tag, ids) {
   }
 }
 
+// ============== 媒体组缓存 ==============
+
+async function getMediaGroupCache(env, mediaGroupId) {
+  try {
+    const data = await env.NAV_KV.get(`media_group_${mediaGroupId}`, { type: 'json', cacheTtl: 10 });
+    return data || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function saveMediaGroupCache(env, mediaGroupId, messages) {
+  try {
+    // 媒体组缓存保持 60 秒，足够收集所有消息
+    await env.NAV_KV.put(`media_group_${mediaGroupId}`, JSON.stringify(messages), { expirationTtl: 60 });
+  } catch (e) {
+    console.error('saveMediaGroupCache error:', e);
+  }
+}
+
+async function deleteMediaGroupCache(env, mediaGroupId) {
+  try {
+    await env.NAV_KV.delete(`media_group_${mediaGroupId}`);
+  } catch (e) {
+    console.error('deleteMediaGroupCache error:', e);
+  }
+}
+
 // ============== 数据操作 ==============
 
 async function addItem(env, tags, content, source = 'web', sourceInfo = null, telegramMsgInfo = null, mediaInfo = null) {
@@ -448,7 +476,7 @@ async function addItem(env, tags, content, source = 'web', sourceInfo = null, te
     source,
     source_info: sourceInfo,
     telegram_msg: telegramMsgInfo,
-    media: mediaInfo,
+    media: mediaInfo,  // 现在可以是单个对象或数组
     timestamp: getTimestamp()
   };
   
@@ -803,8 +831,9 @@ async function handleEditedChannelMessage(env, message, botConfig) {
 async function handleChannelMessage(env, message, botConfig) {
   const chatId = message.chat.id;
   const chatTitle = message.chat.title;
+  const mediaGroupId = message.media_group_id;
   
-  console.log('Channel post from:', chatId, 'title:', chatTitle);
+  console.log('Channel post from:', chatId, 'title:', chatTitle, 'media_group_id:', mediaGroupId);
   
   // 验证频道权限
   if (!isAllowedChannel(chatId.toString(), botConfig.allowed_channels)) {
@@ -812,9 +841,14 @@ async function handleChannelMessage(env, message, botConfig) {
     return { ok: true };
   }
   
-  // 处理媒体文件
+  // 如果是媒体组消息，需要收集所有消息
+  if (mediaGroupId) {
+    return await handleMediaGroupMessage(env, message, botConfig, 'channel');
+  }
+  
+  // 处理单个媒体文件或贴纸
   let mediaInfo = null;
-  if (message.photo || message.audio || message.voice || message.document || message.video) {
+  if (message.photo || message.audio || message.voice || message.document || message.video || message.sticker) {
     mediaInfo = await processMediaFile(message, botConfig.bot_token, chatId);
   }
   
@@ -871,6 +905,136 @@ async function handleChannelMessage(env, message, botConfig) {
   
   return { ok: true };
 }
+
+// 处理媒体组消息（相册）
+async function handleMediaGroupMessage(env, message, botConfig, chatType = 'channel') {
+  const mediaGroupId = message.media_group_id;
+  const chatId = message.chat.id;
+  
+  // 获取当前缓存的媒体组消息
+  let groupCache = await getMediaGroupCache(env, mediaGroupId);
+  
+  if (!groupCache) {
+    groupCache = {
+      messages: [],
+      firstMessageTime: Date.now(),
+      processed: false
+    };
+  }
+  
+  // 添加当前消息到缓存
+  groupCache.messages.push(message);
+  await saveMediaGroupCache(env, mediaGroupId, groupCache);
+  
+  // 等待 2 秒后处理（收集所有消息）
+  // 使用 Cloudflare Durable Objects 的 waitUntil 延迟处理
+  const processingDelay = 2000;
+  const timeSinceFirst = Date.now() - groupCache.firstMessageTime;
+  
+  // 如果已经等待足够时间或消息数量达到 10（Telegram 最大相册数）
+  if (timeSinceFirst >= processingDelay || groupCache.messages.length >= 10) {
+    // 避免重复处理
+    if (groupCache.processed) {
+      return { ok: true };
+    }
+    
+    groupCache.processed = true;
+    await saveMediaGroupCache(env, mediaGroupId, groupCache);
+    
+    // 处理整个媒体组
+    await processMediaGroup(env, groupCache.messages, botConfig, chatType);
+    
+    // 删除缓存
+    await deleteMediaGroupCache(env, mediaGroupId);
+  }
+  
+  return { ok: true };
+}
+
+// 处理收集完成的媒体组
+async function processMediaGroup(env, messages, botConfig, chatType) {
+  if (messages.length === 0) return;
+  
+  // 按消息 ID 排序
+  messages.sort((a, b) => a.message_id - b.message_id);
+  
+  const firstMessage = messages[0];
+  const chatId = firstMessage.chat.id;
+  const chatTitle = firstMessage.chat.title || firstMessage.chat.first_name;
+  
+  // 收集所有媒体
+  const mediaArray = [];
+  for (const msg of messages) {
+    const mediaInfo = await processMediaFile(msg, botConfig.bot_token, chatId);
+    if (mediaInfo) {
+      mediaArray.push(mediaInfo);
+    }
+  }
+  
+  // 提取第一条消息的文字内容
+  let content = messages[0].text || messages[0].caption || '';
+  const entities = messages[0].entities || messages[0].caption_entities || [];
+  
+  if (entities.length > 0) {
+    content = restoreEntities(content, entities, 'std');
+  }
+  
+  // 解析标签
+  const tags = parseTags(content);
+  const finalTags = tags.length > 0 ? tags : (chatType === 'channel' ? ['channel'] : ['media']);
+  
+  // 频道消息添加频道标签
+  if (chatType === 'channel' && chatTitle) {
+    const channelTag = chatTitle.toLowerCase()
+      .replace(/[^a-z0-9\u4e00-\u9fa5]/g, '_')
+      .replace(/_+/g, '_')
+      .replace(/^_|_$/g, '');
+    if (channelTag) {
+      finalTags.push(`channel_${channelTag}`);
+    }
+  }
+  
+  // 保存 Telegram 消息信息
+  const telegramMsgInfo = {
+    chat_id: chatId,
+    message_id: firstMessage.message_id,
+    chat_type: chatType,
+    channel_title: chatType === 'channel' ? chatTitle : null,
+    media_group_id: firstMessage.media_group_id
+  };
+  
+  // 保存来源信息
+  let sourceInfo;
+  if (chatType === 'channel') {
+    sourceInfo = {
+      channel_id: chatId.toString(),
+      channel_title: chatTitle,
+      channel_username: firstMessage.chat.username || null,
+      type: 'channel'
+    };
+  } else {
+    sourceInfo = {
+      user_id: firstMessage.from.id.toString(),
+      first_name: firstMessage.from.first_name,
+      username: firstMessage.from.username || null,
+      type: 'user'
+    };
+  }
+  
+  // 保存收藏项（媒体为数组）
+  const item = await addItem(
+    env,
+    finalTags,
+    content,
+    chatType === 'channel' ? 'telegram_channel' : 'telegram',
+    sourceInfo,
+    telegramMsgInfo,
+    mediaArray  // 传入媒体数组
+  );
+  
+  console.log('Media group saved:', item.id, 'media count:', mediaArray.length);
+}
+
 
 // 处理 Telegram 私聊消息
 async function handleTelegramMessage(env, message, botConfig) {
@@ -1271,7 +1435,7 @@ async function handleCallbackQuery(env, query, botConfig) {
   return { ok: true };
 }
 
-// 处理媒体文件（图片、音频、文档等）
+// 处理媒体文件（图片、音频、文档、视频、贴纸等）
 async function processMediaFile(message, botToken, chatId) {
   let fileInfo = null;
   let mediaType = null;
@@ -1284,6 +1448,12 @@ async function processMediaFile(message, botToken, chatId) {
     const photos = message.photo.sort((a, b) => b.file_size - a.file_size);
     fileInfo = photos[0];
     mediaType = 'photo';
+    fileSize = fileInfo.file_size || 0;
+  } else if (message.sticker) {
+    // 处理贴纸
+    fileInfo = message.sticker;
+    mediaType = 'sticker';
+    fileName = 'sticker';
     fileSize = fileInfo.file_size || 0;
   } else if (message.audio) {
     fileInfo = message.audio;
@@ -1309,40 +1479,6 @@ async function processMediaFile(message, botToken, chatId) {
   
   if (!fileInfo) return null;
   
-  const MAX_DOWNLOAD_SIZE = 20 * 1024 * 1024; // 20MB
-  
-  // 如果文件小于 20MB，获取文件 URL
-  let fileUrl = null;
-  let fileBase64 = null;
-  
-  if (fileSize < MAX_DOWNLOAD_SIZE) {
-    try {
-      // 获取文件路径
-      const filePathResponse = await fetch(`https://api.telegram.org/bot${botToken}/getFile?file_id=${fileInfo.file_id}`);
-      const filePathData = await filePathResponse.json();
-      
-      if (filePathData.ok && filePathData.result.file_path) {
-        const filePath = filePathData.result.file_path;
-        
-        // 只对图片转换为 base64（即时显示）
-        if (mediaType === 'photo') {
-          try {
-            const fileResponse = await fetch(`https://api.telegram.org/file/bot${botToken}/${filePath}`);
-            const fileBuffer = await fileResponse.arrayBuffer();
-            const base64 = btoa(String.fromCharCode(...new Uint8Array(fileBuffer)));
-            
-            fileBase64 = `data:image/jpeg;base64,${base64}`;
-          } catch (e) {
-            console.error('Download file error:', e);
-          }
-        }
-        // 语音、音频、视频、文档都使用 file_id（通过代理访问）
-      }
-    } catch (e) {
-      console.error('Get file path error:', e);
-    }
-  }
-  
   // 生成 Telegram 消息链接
   let telegramLink = null;
   if (message.chat && message.chat.username) {
@@ -1351,21 +1487,34 @@ async function processMediaFile(message, botToken, chatId) {
     telegramLink = `https://t.me/c/${Math.abs(chatId)}/${message.message_id}`;
   }
   
+  // 所有媒体文件（包括图片）都使用 file_id 通过代理访问，不再下载 base64
+  // 这样可以节省大量 KV 存储空间
   return {
     type: mediaType,
     fileName: fileName,
     fileSize: fileSize,
-    fileId: fileInfo.file_id,  // 保存 file_id 而不是直接 URL
-    fileBase64: fileBase64,
+    fileId: fileInfo.file_id,  // 保存 file_id 用于代理访问
     telegramLink: telegramLink,
     mimeType: fileInfo.mime_type || null,
     duration: fileInfo.duration || null,
     width: fileInfo.width || null,
-    height: fileInfo.height || null
+    height: fileInfo.height || null,
+    // 贴纸特殊属性
+    emoji: message.sticker ? message.sticker.emoji : null,
+    isAnimated: message.sticker ? message.sticker.is_animated : false,
+    isVideo: message.sticker ? message.sticker.is_video : false,
+    thumbnail: fileInfo.thumbnail ? fileInfo.thumbnail.file_id : null
   };
 }
 
 async function handleAddContent(env, chatId, message, botConfig) {
+  const mediaGroupId = message.media_group_id;
+  
+  // 如果是媒体组消息，使用媒体组处理逻辑
+  if (mediaGroupId) {
+    return await handleMediaGroupMessage(env, message, botConfig, 'user');
+  }
+  
   let content = message.text || message.caption || '';
   let sourceInfo = null;
   let mediaInfo = null;
@@ -1390,8 +1539,8 @@ async function handleAddContent(env, chatId, message, botConfig) {
     };
   }
   
-  // 处理媒体文件（图片、音频、文档等）
-  if (message.photo || message.audio || message.voice || message.document || message.video) {
+  // 处理媒体文件（图片、音频、文档、视频、贴纸等）
+  if (message.photo || message.audio || message.voice || message.document || message.video || message.sticker) {
     mediaInfo = await processMediaFile(message, botConfig.bot_token, chatId);
   }
   
@@ -2296,6 +2445,11 @@ async function renderSPA(env) {
     }
     .item-actions { display: flex; gap: 4px; opacity: 0; transition: opacity 0.2s; }
     .item-card:hover .item-actions { opacity: 1; }
+    
+    /* 桌面端：默认显示操作按钮 */
+    @media (min-width: 769px) {
+      .item-actions { opacity: 1; }
+    }
     .item-action {
       width: 32px;
       height: 32px;
@@ -2335,6 +2489,142 @@ async function renderSPA(env) {
       border-radius: 12px;
       overflow: hidden;
     }
+    
+    /* 媒体组样式 */
+    .media-group {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    
+    /* 图片轮播 */
+    .photo-carousel {
+      position: relative;
+      width: 100%;
+      background: var(--bg);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .carousel-track {
+      position: relative;
+      width: 100%;
+      height: 0;
+      padding-bottom: 75%; /* 4:3 宽高比 */
+    }
+    .carousel-slide {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      opacity: 0;
+      transition: opacity 0.3s ease-in-out;
+      pointer-events: none;
+    }
+    .carousel-slide.active {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .carousel-image {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      cursor: pointer;
+      background: var(--bg);
+    }
+    .carousel-btn {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      background: rgba(0, 0, 0, 0.5);
+      color: white;
+      border: none;
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      font-size: 24px;
+      cursor: pointer;
+      z-index: 10;
+      transition: background 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .carousel-btn:hover {
+      background: rgba(0, 0, 0, 0.8);
+    }
+    .carousel-prev { left: 10px; }
+    .carousel-next { right: 10px; }
+    .carousel-indicators {
+      position: absolute;
+      bottom: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 8px;
+      z-index: 10;
+    }
+    .carousel-indicator {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.5);
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .carousel-indicator.active {
+      background: white;
+    }
+    
+    /* 视频网格 */
+    .video-grid {
+      display: grid;
+      gap: 12px;
+      width: 100%;
+    }
+    .video-grid-1col {
+      grid-template-columns: 1fr;
+    }
+    .video-grid-2col {
+      grid-template-columns: repeat(2, 1fr);
+    }
+    .video-grid-3col {
+      grid-template-columns: repeat(3, 1fr);
+    }
+    .video-grid-item {
+      background: var(--bg);
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    .video-grid-item video {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+    
+    /* 贴纸样式 */
+    .media-sticker {
+      display: inline-flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      padding: 12px;
+      background: var(--bg);
+      border-radius: 12px;
+      border: 1px solid var(--border);
+    }
+    .sticker-image {
+      max-width: 200px;
+      max-height: 200px;
+      width: auto;
+      height: auto;
+    }
+    .sticker-emoji {
+      font-size: 20px;
+    }
+    
+    /* 单张图片样式 */
     .media-image {
       max-width: 100%;
       height: auto;
@@ -2345,6 +2635,18 @@ async function renderSPA(env) {
     }
     .media-image:hover {
       transform: scale(1.02);
+    }
+    
+    /* 响应式：移动端视频网格调整 */
+    @media (max-width: 768px) {
+      .video-grid-3col {
+        grid-template-columns: repeat(2, 1fr);
+      }
+      .carousel-btn {
+        width: 32px;
+        height: 32px;
+        font-size: 20px;
+      }
     }
     .media-audio {
       padding: 16px;
@@ -3999,10 +4301,18 @@ async function renderSPA(env) {
     }
     
     function updateBatchDeleteButton() {
+      // 更新旧样式删除按钮
       var deleteBtn = document.querySelector('.toolbar-btn.danger');
       if (deleteBtn) {
         deleteBtn.disabled = state.selectedIds.length === 0;
         deleteBtn.textContent = '🗑️ 删除(' + state.selectedIds.length + ')';
+      }
+      
+      // 更新紧凑型工具栏删除按钮
+      var compactDeleteBtn = document.querySelector('.compact-btn.danger');
+      if (compactDeleteBtn) {
+        compactDeleteBtn.disabled = state.selectedIds.length === 0;
+        compactDeleteBtn.innerHTML = '🗑️(' + state.selectedIds.length + ')';
       }
     }
     
@@ -4674,75 +4984,62 @@ async function renderSPA(env) {
     function renderMedia(media) {
       if (!media) return '';
       
-      var html = '<div class="media-container">';
+      // 如果是数组（媒体组），分别处理图片和视频
+      if (Array.isArray(media)) {
+        var photos = media.filter(function(m) { return m.type === 'photo'; });
+        var videos = media.filter(function(m) { return m.type === 'video'; });
+        var others = media.filter(function(m) { return m.type !== 'photo' && m.type !== 'video'; });
+        
+        var html = '<div class="media-container media-group">';
+        
+        // 渲染图片轮播（如果有）
+        if (photos.length > 0) {
+          html += renderPhotoCarousel(photos);
+        }
+        
+        // 渲染视频网格（如果有）
+        if (videos.length > 0) {
+          html += renderVideoGrid(videos);
+        }
+        
+        // 渲染其他媒体
+        for (var i = 0; i < others.length; i++) {
+          html += renderSingleMedia(others[i]);
+        }
+        
+        html += '</div>';
+        return html;
+      }
       
-      if (media.type === 'photo') {
-        if (media.fileBase64) {
-          // 图片：懒加载（< 20MB，已转换为 base64）
-          html += '<img data-src="' + media.fileBase64 + '" alt="图片" class="media-image lazy-image" onclick="window.open(this.src, \\'_blank\\')">';
-        } else {
-          // 大图片：链接到 Telegram（理论上不太可能，Telegram 会压缩）
-          html += '<div class="media-file">';
-          html += '<a href="' + media.telegramLink + '" target="_blank" class="media-link">';
-          html += '📷 ' + escapeHtml(media.fileName || 'image') + ' (' + formatFileSize(media.fileSize) + ')';
-          html += '</a>';
-          html += '</div>';
-        }
-      } else if (media.type === 'audio' || media.type === 'voice') {
-        // 音频/语音：检查文件大小
-        if (media.fileSize < 20 * 1024 * 1024 && (media.fileBase64 || media.fileId)) {
-          // 小音频：使用 Plyr 播放器
-          var audioId = 'audio-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
-          var audioSrc = media.fileBase64 ? media.fileBase64 : '/api/file/' + media.fileId;
-          html += '<div class="media-audio">';
-          html += '<audio id="'+audioId+'" class="plyr-audio" controls>';
-          html += '<source src="'+audioSrc+'" type="'+(media.mimeType || 'audio/mpeg')+'">';
-          html += '</audio>';
-          if (media.fileName) {
-            html += '<div class="media-filename">' + (media.type === 'voice' ? '🎤' : '🎵') + ' ' + escapeHtml(media.fileName) + '</div>';
-          }
-          html += '</div>';
-        } else {
-          // 大音频：链接到 Telegram
-          html += '<div class="media-file">';
-          html += '<a href="' + media.telegramLink + '" target="_blank" class="media-link">';
-          html += (media.type === 'voice' ? '🎤' : '🎵') + ' ' + escapeHtml(media.fileName || 'audio') + ' (' + formatFileSize(media.fileSize) + ')';
-          html += '</a>';
-          html += '</div>';
-        }
-      } else if (media.type === 'video') {
-        if (media.fileSize < 20 * 1024 * 1024 && media.fileId) {
-          // 小视频：使用 Plyr 播放器
-          var videoId = 'video-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
-          html += '<div class="media-video">';
-          html += '<video id="'+videoId+'" class="plyr-video" controls playsinline>';
-          html += '<source src="/api/file/'+media.fileId+'" type="'+(media.mimeType || 'video/mp4')+'">';
-          html += '</video>';
-          if (media.fileName) {
-            html += '<div class="media-filename">🎬 ' + escapeHtml(media.fileName) + ' (' + formatFileSize(media.fileSize) + ')</div>';
-          }
-          html += '</div>';
-        } else {
-          // 大视频：链接到 Telegram
-          html += '<div class="media-file">';
-          html += '<a href="' + media.telegramLink + '" target="_blank" class="media-link">';
-          html += '🎬 ' + escapeHtml(media.fileName || 'video') + ' (' + formatFileSize(media.fileSize) + ')';
-          html += '</a>';
-          html += '</div>';
-        }
-      } else if (media.type === 'document') {
-        // 文档：显示文件名和大小
-        html += '<div class="media-file">';
-        if (media.fileSize < 20 * 1024 * 1024 && media.fileId) {
-          // 小文件：通过代理下载
-          html += '<a href="/api/file/' + media.fileId + '" target="_blank" class="media-link" download>';
-          html += '📎 ' + escapeHtml(media.fileName || 'document') + ' (' + formatFileSize(media.fileSize) + ')';
-          html += '</a>';
-        } else {
-          // 大文件：链接到 Telegram
-          html += '<a href="' + media.telegramLink + '" target="_blank" class="media-link">';
-          html += '📎 ' + escapeHtml(media.fileName || 'document') + ' (' + formatFileSize(media.fileSize) + ')';
-          html += '</a>';
+      // 单个媒体
+      return '<div class="media-container">' + renderSingleMedia(media) + '</div>';
+    }
+    
+    // 渲染图片轮播
+    function renderPhotoCarousel(photos) {
+      if (photos.length === 0) return '';
+      
+      var carouselId = 'carousel-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+      var html = '<div class="photo-carousel" id="' + carouselId + '">';
+      html += '<div class="carousel-track">';
+      
+      for (var i = 0; i < photos.length; i++) {
+        var photo = photos[i];
+        var imgSrc = '/api/file/' + photo.fileId;
+        html += '<div class="carousel-slide' + (i === 0 ? ' active' : '') + '">';
+        html += '<img data-src="' + imgSrc + '" alt="图片' + (i + 1) + '" class="carousel-image lazy-image" onclick="openImageViewer(\\'' + carouselId + '\\', ' + i + ')">';
+        html += '</div>';
+      }
+      
+      html += '</div>';
+      
+      // 添加导航按钮（多于1张图时）
+      if (photos.length > 1) {
+        html += '<button class="carousel-btn carousel-prev" onclick="carouselPrev(\\'' + carouselId + '\\')">‹</button>';
+        html += '<button class="carousel-btn carousel-next" onclick="carouselNext(\\'' + carouselId + '\\')">›</button>';
+        html += '<div class="carousel-indicators">';
+        for (var i = 0; i < photos.length; i++) {
+          html += '<span class="carousel-indicator' + (i === 0 ? ' active' : '') + '" onclick="carouselGoto(\\'' + carouselId + '\\', ' + i + ')"></span>';
         }
         html += '</div>';
       }
@@ -4750,6 +5047,121 @@ async function renderSPA(env) {
       html += '</div>';
       return html;
     }
+    
+    // 渲染视频网格
+    function renderVideoGrid(videos) {
+      if (videos.length === 0) return '';
+      
+      // 根据视频数量决定列数：1个=1列，2个=2列，3+个=3列
+      var cols = videos.length === 1 ? 1 : videos.length === 2 ? 2 : 3;
+      var html = '<div class="video-grid video-grid-' + cols + 'col">';
+      
+      for (var i = 0; i < videos.length; i++) {
+        var video = videos[i];
+        if (video.fileSize < 20 * 1024 * 1024 && video.fileId) {
+          var videoId = 'video-' + Date.now() + '-' + i + '-' + Math.random().toString(36).substr(2, 9);
+          html += '<div class="video-grid-item">';
+          html += '<video id="' + videoId + '" class="plyr-video" controls playsinline>';
+          html += '<source src="/api/file/' + video.fileId + '" type="' + (video.mimeType || 'video/mp4') + '">';
+          html += '</video>';
+          html += '</div>';
+        } else {
+          html += '<div class="video-grid-item media-file">';
+          html += '<a href="' + video.telegramLink + '" target="_blank" class="media-link">';
+          html += '🎬 视频' + (i + 1) + ' (' + formatFileSize(video.fileSize) + ')';
+          html += '</a>';
+          html += '</div>';
+        }
+      }
+      
+      html += '</div>';
+      return html;
+    }
+    
+    // 渲染单个媒体
+    function renderSingleMedia(media) {
+      var html = '';
+      
+      if (media.type === 'photo') {
+        // 图片：使用代理，不再用 base64
+        var imgSrc = '/api/file/' + media.fileId;
+        html += '<img data-src="' + imgSrc + '" alt="图片" class="media-image lazy-image" onclick="window.open(this.src, \\'_blank\\')">';
+      } else if (media.type === 'sticker') {
+        // 贴纸：支持静态和动态贴纸
+        var stickerSrc = '/api/file/' + media.fileId;
+        html += '<div class="media-sticker">';
+        if (media.isVideo) {
+          // 视频贴纸（.webm）
+          html += '<video class="sticker-image" autoplay loop muted playsinline>';
+          html += '<source src="' + stickerSrc + '" type="video/webm">';
+          html += '</video>';
+        } else if (media.isAnimated) {
+          // 动画贴纸（.tgs）- 使用图片展示或链接
+          html += '<img data-src="' + stickerSrc + '" alt="贴纸" class="sticker-image lazy-image">';
+        } else {
+          // 静态贴纸（.webp）
+          html += '<img data-src="' + stickerSrc + '" alt="贴纸" class="sticker-image lazy-image">';
+        }
+        if (media.emoji) {
+          html += '<div class="sticker-emoji">' + media.emoji + '</div>';
+        }
+        html += '</div>';
+      } else if (media.type === 'audio' || media.type === 'voice') {
+        // 音频/语音
+        if (media.fileSize < 20 * 1024 * 1024 && media.fileId) {
+          var audioId = 'audio-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+          html += '<div class="media-audio">';
+          html += '<audio id="' + audioId + '" class="plyr-audio" controls>';
+          html += '<source src="/api/file/' + media.fileId + '" type="' + (media.mimeType || 'audio/mpeg') + '">';
+          html += '</audio>';
+          if (media.fileName) {
+            html += '<div class="media-filename">' + (media.type === 'voice' ? '🎤' : '🎵') + ' ' + escapeHtml(media.fileName) + '</div>';
+          }
+          html += '</div>';
+        } else {
+          html += '<div class="media-file">';
+          html += '<a href="' + media.telegramLink + '" target="_blank" class="media-link">';
+          html += (media.type === 'voice' ? '🎤' : '🎵') + ' ' + escapeHtml(media.fileName || 'audio') + ' (' + formatFileSize(media.fileSize) + ')';
+          html += '</a>';
+          html += '</div>';
+        }
+      } else if (media.type === 'video') {
+        // 单个视频
+        if (media.fileSize < 20 * 1024 * 1024 && media.fileId) {
+          var videoId = 'video-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+          html += '<div class="media-video">';
+          html += '<video id="' + videoId + '" class="plyr-video" controls playsinline>';
+          html += '<source src="/api/file/' + media.fileId + '" type="' + (media.mimeType || 'video/mp4') + '">';
+          html += '</video>';
+          if (media.fileName) {
+            html += '<div class="media-filename">🎬 ' + escapeHtml(media.fileName) + ' (' + formatFileSize(media.fileSize) + ')</div>';
+          }
+          html += '</div>';
+        } else {
+          html += '<div class="media-file">';
+          html += '<a href="' + media.telegramLink + '" target="_blank" class="media-link">';
+          html += '🎬 ' + escapeHtml(media.fileName || 'video') + ' (' + formatFileSize(media.fileSize) + ')';
+          html += '</a>';
+          html += '</div>';
+        }
+      } else if (media.type === 'document') {
+        // 文档
+        html += '<div class="media-file">';
+        if (media.fileSize < 20 * 1024 * 1024 && media.fileId) {
+          html += '<a href="/api/file/' + media.fileId + '" target="_blank" class="media-link" download>';
+          html += '📎 ' + escapeHtml(media.fileName || 'document') + ' (' + formatFileSize(media.fileSize) + ')';
+          html += '</a>';
+        } else {
+          html += '<a href="' + media.telegramLink + '" target="_blank" class="media-link">';
+          html += '📎 ' + escapeHtml(media.fileName || 'document') + ' (' + formatFileSize(media.fileSize) + ')';
+          html += '</a>';
+        }
+        html += '</div>';
+      }
+      
+      return html;
+    }
+
     
     // 格式化文件大小
     function formatFileSize(bytes) {
@@ -4759,6 +5171,79 @@ async function renderSPA(env) {
       var i = Math.floor(Math.log(bytes) / Math.log(k));
       return (bytes / Math.pow(k, i)).toFixed(2) + ' ' + sizes[i];
     }
+    
+    // ========== 轮播相关函数 ==========
+    function carouselNext(carouselId) {
+      var carousel = document.getElementById(carouselId);
+      if (!carousel) return;
+      
+      var slides = carousel.querySelectorAll('.carousel-slide');
+      var indicators = carousel.querySelectorAll('.carousel-indicator');
+      var currentIndex = -1;
+      
+      for (var i = 0; i < slides.length; i++) {
+        if (slides[i].classList.contains('active')) {
+          currentIndex = i;
+          break;
+        }
+      }
+      
+      var nextIndex = (currentIndex + 1) % slides.length;
+      slides[currentIndex].classList.remove('active');
+      slides[nextIndex].classList.add('active');
+      indicators[currentIndex].classList.remove('active');
+      indicators[nextIndex].classList.add('active');
+    }
+    
+    function carouselPrev(carouselId) {
+      var carousel = document.getElementById(carouselId);
+      if (!carousel) return;
+      
+      var slides = carousel.querySelectorAll('.carousel-slide');
+      var indicators = carousel.querySelectorAll('.carousel-indicator');
+      var currentIndex = -1;
+      
+      for (var i = 0; i < slides.length; i++) {
+        if (slides[i].classList.contains('active')) {
+          currentIndex = i;
+          break;
+        }
+      }
+      
+      var prevIndex = (currentIndex - 1 + slides.length) % slides.length;
+      slides[currentIndex].classList.remove('active');
+      slides[prevIndex].classList.add('active');
+      indicators[currentIndex].classList.remove('active');
+      indicators[prevIndex].classList.add('active');
+    }
+    
+    function carouselGoto(carouselId, index) {
+      var carousel = document.getElementById(carouselId);
+      if (!carousel) return;
+      
+      var slides = carousel.querySelectorAll('.carousel-slide');
+      var indicators = carousel.querySelectorAll('.carousel-indicator');
+      
+      for (var i = 0; i < slides.length; i++) {
+        slides[i].classList.remove('active');
+        indicators[i].classList.remove('active');
+      }
+      
+      slides[index].classList.add('active');
+      indicators[index].classList.add('active');
+    }
+    
+    function openImageViewer(carouselId, index) {
+      var carousel = document.getElementById(carouselId);
+      if (!carousel) return;
+      
+      var slides = carousel.querySelectorAll('.carousel-slide');
+      var img = slides[index].querySelector('img');
+      if (img && img.src) {
+        window.open(img.src, '_blank');
+      }
+    }
+
     
     function renderItemsList(isAdmin) {
       var allItems = getFilteredItems();
