@@ -2227,8 +2227,41 @@ async function renderSPA(env) {
     @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
     @keyframes fadeOut { from { opacity: 1; transform: translateY(0); } to { opacity: 0; transform: translateY(-10px); } }
     
-    .item-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-    .item-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+    .item-header { 
+      display: flex; 
+      align-items: flex-start; 
+      justify-content: flex-end; 
+      gap: 12px; 
+      margin-bottom: 0;
+    }
+    
+    /* 标签区域 - 独立显示，带背景和标题 */
+    .item-tags-section {
+      background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+      border-left: 3px solid var(--primary);
+      padding: 10px 14px;
+      margin-bottom: 12px;
+      border-radius: 8px;
+    }
+    .dark .item-tags-section {
+      background: linear-gradient(135deg, rgba(30, 41, 59, 0.5) 0%, rgba(15, 23, 42, 0.5) 100%);
+      border-left-color: #6366f1;
+    }
+    .tags-label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .item-tags { 
+      display: flex; 
+      flex-wrap: wrap; 
+      gap: 6px; 
+    }
+    
     /* 内容标签样式 - 小号、紧凑、渐变 */
     .item-tag {
       padding: 3px 8px;
@@ -4608,9 +4641,19 @@ async function renderSPA(env) {
           ' onchange="toggleItemSelection(\\'' + item.id + '\\')">';
       }
       
+      // 标签区域 - 独立显示，带背景
+      var tagsSection = '';
+      if (tags) {
+        tagsSection = '<div class="item-tags-section">' +
+          '<span class="tags-label">🏷️ 标签</span>' +
+          '<div class="item-tags">' + tags + '</div>' +
+          '</div>';
+      }
+      
       return '<div class="' + cardClasses + '" id="item-' + item.id + '">' +
         checkboxHtml +
-        '<div class="item-header"><div class="item-tags">' + tags + '</div>' + actions + '</div>' +
+        '<div class="item-header">' + actions + '</div>' +
+        tagsSection +
         mediaHtml +
         contentHtml +
         '<div class="item-meta"><span>📥 ' + sourceHtml + '</span><span>🕐 ' + formatTime(item.timestamp) + '</span>' + editedBadge + '</div>' +
