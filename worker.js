@@ -2728,7 +2728,7 @@ async function renderSPA(env) {
       align-items: center;
       gap: 4px;
     }
-    .filter-badge {
+    .notification-dot {
       position: absolute;
       top: 2px;
       right: 2px;
@@ -4820,7 +4820,7 @@ async function renderSPA(env) {
         '</select>';
       compactToolbarHtml += '<button class="compact-btn icon-btn" onclick="toggleFilterDrawer()" title="筛选">' +
         '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z"/></svg>' +
-        (state.advancedFilter.mediaType || state.advancedFilter.dateFrom || state.advancedFilter.dateTo ? ' <span class="filter-badge"></span>' : '') +
+        (state.advancedFilter.mediaType || state.advancedFilter.dateFrom || state.advancedFilter.dateTo ? ' <span class="notification-dot"></span>' : '') +
         '</button>';
       compactToolbarHtml += '</div>';
       
