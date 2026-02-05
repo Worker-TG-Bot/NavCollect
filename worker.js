@@ -2235,11 +2235,11 @@ async function renderSPA(env) {
       margin-bottom: 0;
     }
     
-    /* 标签区域 - 独立显示，带背景和标题 */
+    /* 标签区域 - 标题和操作在同一行 */
     .item-tags-section {
       background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
       border-left: 3px solid var(--primary);
-      padding: 10px 14px;
+      padding: 12px 14px;
       margin-bottom: 12px;
       border-radius: 8px;
     }
@@ -2247,15 +2247,23 @@ async function renderSPA(env) {
       background: linear-gradient(135deg, rgba(30, 41, 59, 0.5) 0%, rgba(15, 23, 42, 0.5) 100%);
       border-left-color: #6366f1;
     }
+    
+    /* 标签头部：标题和操作按钮 */
+    .tags-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
     .tags-label {
-      display: block;
       font-size: 11px;
       font-weight: 600;
       color: var(--text-secondary);
-      margin-bottom: 8px;
       text-transform: uppercase;
       letter-spacing: 0.5px;
     }
+    
+    /* 标签列表 */
     .item-tags { 
       display: flex; 
       flex-wrap: wrap; 
@@ -4641,18 +4649,20 @@ async function renderSPA(env) {
           ' onchange="toggleItemSelection(\\'' + item.id + '\\')">';
       }
       
-      // 标签区域 - 独立显示，带背景
+      // 标签区域 - 独立显示，标题和操作在同一行
       var tagsSection = '';
       if (tags) {
         tagsSection = '<div class="item-tags-section">' +
+          '<div class="tags-header">' +
           '<span class="tags-label">🏷️ 标签</span>' +
+          actions +
+          '</div>' +
           '<div class="item-tags">' + tags + '</div>' +
           '</div>';
       }
       
       return '<div class="' + cardClasses + '" id="item-' + item.id + '">' +
         checkboxHtml +
-        '<div class="item-header">' + actions + '</div>' +
         tagsSection +
         mediaHtml +
         contentHtml +
