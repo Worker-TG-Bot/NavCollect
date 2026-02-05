@@ -2155,18 +2155,31 @@ async function renderSPA(env) {
     
     .tags-section { padding: 16px 0; border-top: 1px solid var(--border); }
     .tags-list { display: flex; flex-wrap: wrap; gap: 8px; }
+    /* 标签云样式 - 大号、描边、浅色 */
     .tag-chip {
-      padding: 6px 14px;
+      padding: 8px 16px;
       background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 20px;
-      font-size: 13px;
+      border: 1.5px solid var(--border);
+      border-radius: 24px;
+      font-size: 14px;
+      font-weight: 500;
       color: var(--text-secondary);
       cursor: pointer;
       transition: all 0.2s;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
     }
-    .tag-chip:hover { border-color: var(--primary); color: var(--primary); }
-    .tag-chip.active { background: var(--primary); border-color: var(--primary); color: white; }
+    .tag-chip:hover { 
+      border-color: var(--primary); 
+      color: var(--primary); 
+      transform: translateY(-1px);
+      box-shadow: 0 2px 6px rgba(99, 102, 241, 0.15);
+    }
+    .tag-chip.active { 
+      background: var(--primary); 
+      border-color: var(--primary); 
+      color: white;
+      box-shadow: 0 2px 6px rgba(99, 102, 241, 0.3);
+    }
     
     .filter-bar {
       display: flex;
@@ -2216,19 +2229,30 @@ async function renderSPA(env) {
     
     .item-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
     .item-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+    /* 内容标签样式 - 小号、紧凑、渐变 */
     .item-tag {
-      padding: 4px 10px;
-      background: linear-gradient(135deg, #eef2ff, #e0e7ff);
-      color: var(--primary);
-      border-radius: 12px;
-      font-size: 12px;
-      font-weight: 500;
+      padding: 3px 8px;
+      background: linear-gradient(135deg, #eef2ff 0%, #dbeafe 100%);
+      color: #4f46e5;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 600;
       cursor: pointer;
       border: none;
       transition: all 0.2s;
+      letter-spacing: 0.3px;
+      box-shadow: 0 1px 2px rgba(99, 102, 241, 0.1);
     }
-    .dark .item-tag { background: rgba(99,102,241,0.2); }
-    .item-tag:hover { background: var(--primary); color: white; }
+    .dark .item-tag { 
+      background: linear-gradient(135deg, rgba(99,102,241,0.25) 0%, rgba(59,130,246,0.25) 100%);
+      color: #a5b4fc;
+    }
+    .item-tag:hover { 
+      background: linear-gradient(135deg, var(--primary) 0%, #4f46e5 100%);
+      color: white;
+      transform: translateY(-1px);
+      box-shadow: 0 2px 4px rgba(99, 102, 241, 0.3);
+    }
     .item-actions { display: flex; gap: 4px; opacity: 0; transition: opacity 0.2s; }
     .item-card:hover .item-actions { opacity: 1; }
     .item-action {
@@ -2594,7 +2618,320 @@ async function renderSPA(env) {
       opacity: 1;
     }
     
-    /* 工具栏样式 */
+    /* 紧凑型工具栏样式 */
+    .compact-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 16px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+    .toolbar-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .group-label {
+      font-size: 13px;
+      color: var(--text-secondary);
+      font-weight: 500;
+      margin-right: 4px;
+    }
+    .compact-btn {
+      padding: 6px 12px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.2s;
+      white-space: nowrap;
+    }
+    .compact-btn:hover {
+      border-color: var(--primary);
+      color: var(--primary);
+      transform: translateY(-1px);
+    }
+    .compact-btn.primary {
+      background: var(--primary);
+      border-color: var(--primary);
+      color: white;
+    }
+    .compact-btn.primary:hover {
+      background: #4f46e5;
+    }
+    .compact-btn.danger {
+      background: #fee;
+      border-color: #fcc;
+      color: #c33;
+    }
+    .compact-btn.danger:hover {
+      background: #fcc;
+    }
+    .compact-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+    .compact-btn.icon-btn {
+      position: relative;
+      padding: 6px 10px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .filter-badge {
+      position: absolute;
+      top: 2px;
+      right: 2px;
+      width: 8px;
+      height: 8px;
+      background: #ef4444;
+      border-radius: 50%;
+      border: 2px solid var(--bg-card);
+    }
+    .compact-select {
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .compact-select:hover {
+      border-color: var(--primary);
+    }
+    .compact-select:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+    }
+    
+    /* 紧凑型下拉菜单 */
+    .compact-dropdown {
+      position: relative;
+    }
+    .compact-menu {
+      display: none;
+      position: absolute;
+      top: 100%;
+      right: 0;
+      margin-top: 6px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: var(--shadow-lg);
+      min-width: 140px;
+      z-index: 100;
+      overflow: hidden;
+    }
+    .compact-dropdown:hover .compact-menu {
+      display: block;
+    }
+    .compact-menu button {
+      display: block;
+      width: 100%;
+      padding: 8px 14px;
+      border: none;
+      background: transparent;
+      color: var(--text);
+      text-align: left;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .compact-menu button:hover {
+      background: var(--bg);
+    }
+    
+    /* 抽屉式筛选面板 */
+    .filter-drawer {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 9999;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+    .filter-drawer.open {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .filter-drawer-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.5);
+      backdrop-filter: blur(4px);
+    }
+    .filter-drawer-content {
+      position: absolute;
+      top: 0;
+      right: 0;
+      width: 100%;
+      max-width: 400px;
+      height: 100%;
+      background: var(--bg);
+      box-shadow: var(--shadow-lg);
+      display: flex;
+      flex-direction: column;
+      transform: translateX(100%);
+      transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .filter-drawer.open .filter-drawer-content {
+      transform: translateX(0);
+    }
+    .filter-drawer-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 20px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-card);
+    }
+    .filter-drawer-header h3 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .filter-close {
+      width: 36px;
+      height: 36px;
+      border: none;
+      background: transparent;
+      color: var(--text-secondary);
+      font-size: 28px;
+      cursor: pointer;
+      border-radius: 8px;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 1;
+    }
+    .filter-close:hover {
+      background: var(--bg);
+      color: var(--text);
+    }
+    .filter-drawer-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+    }
+    .filter-section {
+      margin-bottom: 24px;
+    }
+    .filter-section:last-child {
+      margin-bottom: 0;
+    }
+    .filter-section-label {
+      display: block;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text);
+      margin-bottom: 10px;
+    }
+    .filter-drawer-select,
+    .filter-drawer-input {
+      width: 100%;
+      padding: 10px 14px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg-card);
+      color: var(--text);
+      font-size: 14px;
+      transition: all 0.2s;
+    }
+    .filter-drawer-select:hover,
+    .filter-drawer-input:hover {
+      border-color: var(--primary);
+    }
+    .filter-drawer-select:focus,
+    .filter-drawer-input:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+    }
+    .filter-date-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .filter-date-sep {
+      color: var(--text-secondary);
+      font-size: 14px;
+      flex-shrink: 0;
+    }
+    .filter-shortcuts {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .filter-shortcut {
+      padding: 8px 16px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg-card);
+      color: var(--text);
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .filter-shortcut:hover {
+      border-color: var(--primary);
+      background: rgba(99, 102, 241, 0.1);
+      color: var(--primary);
+    }
+    .filter-drawer-footer {
+      padding: 16px 20px;
+      border-top: 1px solid var(--border);
+      background: var(--bg-card);
+      display: flex;
+      gap: 12px;
+    }
+    .filter-drawer-btn {
+      flex: 1;
+      padding: 12px;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .filter-drawer-btn.primary {
+      background: var(--primary);
+      color: white;
+    }
+    .filter-drawer-btn.primary:hover {
+      background: #4f46e5;
+      transform: translateY(-1px);
+    }
+    .filter-drawer-btn.secondary {
+      background: transparent;
+      color: var(--primary);
+      border: 1px solid var(--primary);
+    }
+    .filter-drawer-btn.secondary:hover {
+      background: rgba(99, 102, 241, 0.1);
+    }
+    
+    /* 旧样式保留（向后兼容） */
     .toolbar {
       display: flex;
       align-items: center;
@@ -3152,7 +3489,68 @@ async function renderSPA(env) {
       .footer-links { gap: 8px 16px; }
       .footer-link { padding: 6px 10px; font-size: 13px; }
       
-      /* 移动端工具栏 */
+      /* 移动端紧凑型工具栏 */
+      .compact-toolbar {
+        flex-direction: column;
+        align-items: stretch;
+        padding: 10px 12px;
+      }
+      .toolbar-group {
+        width: 100%;
+        justify-content: space-between;
+      }
+      .group-label {
+        font-size: 12px;
+      }
+      .compact-btn {
+        font-size: 12px;
+        padding: 5px 10px;
+      }
+      .compact-select {
+        font-size: 12px;
+        padding: 5px 8px;
+        flex: 1;
+      }
+      .compact-dropdown {
+        flex: 1;
+      }
+      .compact-menu {
+        left: 0;
+        right: 0;
+        width: 100%;
+      }
+      
+      /* 移动端抽屉 */
+      .filter-drawer-content {
+        max-width: 100%;
+        width: 90%;
+      }
+      .filter-drawer-header {
+        padding: 16px;
+      }
+      .filter-drawer-header h3 {
+        font-size: 16px;
+      }
+      .filter-drawer-body {
+        padding: 16px;
+      }
+      .filter-date-group {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .filter-date-sep {
+        text-align: center;
+        margin: 4px 0;
+      }
+      .filter-drawer-footer {
+        padding: 12px 16px;
+      }
+      .filter-drawer-btn {
+        padding: 10px;
+        font-size: 13px;
+      }
+      
+      /* 移动端工具栏（旧版） */
       .toolbar {
         flex-direction: column;
         align-items: stretch;
@@ -3172,7 +3570,7 @@ async function renderSPA(env) {
         width: 100%;
       }
       
-      /* 移动端筛选 */
+      /* 移动端筛选（旧版） */
       .filter-row {
         flex-direction: column;
         align-items: stretch;
@@ -3829,6 +4227,72 @@ async function renderSPA(env) {
     }
     
     // ========== 高级筛选功能 ==========
+    // ========== 抽屉式筛选控制 ==========
+    function toggleFilterDrawer() {
+      state.showAdvancedFilter = !state.showAdvancedFilter;
+      
+      // 只更新抽屉的 class，不重新渲染整个页面
+      var drawer = document.querySelector('.filter-drawer');
+      if (drawer) {
+        if (state.showAdvancedFilter) {
+          drawer.classList.add('open');
+          // 防止背景滚动
+          document.body.style.overflow = 'hidden';
+        } else {
+          drawer.classList.remove('open');
+          document.body.style.overflow = '';
+        }
+      }
+    }
+    
+    function applyFilterDrawer() {
+      state.currentPage = 1;
+      state.showAdvancedFilter = false;
+      document.body.style.overflow = '';
+      render();
+    }
+    
+    function clearFilterDrawer() {
+      state.advancedFilter = {
+        mediaType: '',
+        dateFrom: '',
+        dateTo: ''
+      };
+      state.currentPage = 1;
+      state.showAdvancedFilter = false;
+      document.body.style.overflow = '';
+      render();
+    }
+    
+    function setDateShortcut(type) {
+      var today = new Date();
+      var year = today.getFullYear();
+      var month = String(today.getMonth() + 1).padStart(2, '0');
+      var day = String(today.getDate()).padStart(2, '0');
+      
+      if (type === 'today') {
+        state.advancedFilter.dateFrom = year + '-' + month + '-' + day;
+        state.advancedFilter.dateTo = year + '-' + month + '-' + day;
+      } else if (type === 'week') {
+        var weekAgo = new Date(today);
+        weekAgo.setDate(today.getDate() - 7);
+        var wYear = weekAgo.getFullYear();
+        var wMonth = String(weekAgo.getMonth() + 1).padStart(2, '0');
+        var wDay = String(weekAgo.getDate()).padStart(2, '0');
+        state.advancedFilter.dateFrom = wYear + '-' + wMonth + '-' + wDay;
+        state.advancedFilter.dateTo = year + '-' + month + '-' + day;
+      } else if (type === 'month') {
+        var monthAgo = new Date(today);
+        monthAgo.setMonth(today.getMonth() - 1);
+        var mYear = monthAgo.getFullYear();
+        var mMonth = String(monthAgo.getMonth() + 1).padStart(2, '0');
+        var mDay = String(monthAgo.getDate()).padStart(2, '0');
+        state.advancedFilter.dateFrom = mYear + '-' + mMonth + '-' + mDay;
+        state.advancedFilter.dateTo = year + '-' + month + '-' + day;
+      }
+      render();
+    }
+    
     function toggleAdvancedFilter() {
       state.showAdvancedFilter = !state.showAdvancedFilter;
       render();
@@ -4255,119 +4719,122 @@ async function renderSPA(env) {
             : '') +
           '</div>';
       
-      // 工具栏：批量操作和导出
-      var toolbarHtml = '<div class="toolbar">' +
-        '<div class="toolbar-left">';
+      // 紧凑型工具栏
+      var compactToolbarHtml = '<div class="compact-toolbar">';
       
+      // 左侧：操作按钮
       if (isAdmin && allItems.length > 0) {
+        compactToolbarHtml += '<div class="toolbar-group">';
+        compactToolbarHtml += '<span class="group-label">操作:</span>';
+        
         if (!state.batchMode) {
-          toolbarHtml += '<button class="toolbar-btn" onclick="enterBatchMode()">📋 批量操作</button>';
+          compactToolbarHtml += '<button class="compact-btn" onclick="enterBatchMode()">📋 批量</button>';
         } else {
-          toolbarHtml += '<button class="toolbar-btn primary" onclick="exitBatchMode()">✓ 完成</button>' +
-            '<button class="toolbar-btn" onclick="selectAllItems()">全选</button>' +
-            '<button class="toolbar-btn" onclick="deselectAllItems()">取消</button>' +
-            '<button class="toolbar-btn danger" onclick="batchDelete()" ' + (state.selectedIds.length === 0 ? 'disabled' : '') + '>🗑️ 删除(' + state.selectedIds.length + ')</button>';
+          compactToolbarHtml += '<button class="compact-btn primary" onclick="exitBatchMode()">✓ 完成</button>';
+          compactToolbarHtml += '<button class="compact-btn" onclick="selectAllItems()">全选</button>';
+          compactToolbarHtml += '<button class="compact-btn danger" onclick="batchDelete()" ' + 
+            (state.selectedIds.length === 0 ? 'disabled' : '') + '>🗑️(' + state.selectedIds.length + ')</button>';
         }
+        
+        if (!state.batchMode && isAdmin) {
+          compactToolbarHtml += '<button class="compact-btn" onclick="showImportModal()">📤 导入</button>';
+          compactToolbarHtml += '<div class="compact-dropdown">' +
+            '<button class="compact-btn">📥 导出 ▼</button>' +
+            '<div class="compact-menu">' +
+            '<button onclick="exportAs(\\'json\\')">📋 JSON</button>' +
+            '<button onclick="exportAs(\\'markdown\\')">📝 Markdown</button>' +
+            '<button onclick="exportAs(\\'html\\')">🌐 HTML</button>' +
+            '</div></div>';
+        }
+        
+        compactToolbarHtml += '</div>';
       }
       
-      toolbarHtml += '</div>' +
-        '<div class="toolbar-right">';
-      
-      if (isAdmin) {
-        toolbarHtml += '<button class="toolbar-btn" onclick="showImportModal()">📤 导入</button>';
-      }
-      
-      toolbarHtml += '<button class="toolbar-btn" onclick="toggleAdvancedFilter()">🔍 ' + (state.showAdvancedFilter ? '隐藏' : '高级') + '筛选</button>';
-      
-      if (isAdmin) {
-        toolbarHtml += '<div class="export-dropdown">' +
-          '<button class="toolbar-btn">📥 导出 ▼</button>' +
-          '<div class="export-menu">' +
-          '<button onclick="exportAs(\\'json\\')">📋 JSON</button>' +
-          '<button onclick="exportAs(\\'markdown\\')">📝 Markdown</button>' +
-          '<button onclick="exportAs(\\'html\\')">🌐 HTML</button>' +
-          '</div>' +
-          '</div>';
-      }
-      
-      toolbarHtml += '</div>' +
-        '</div>';
-      
-      // 高级筛选面板
-      var advancedFilterHtml = '';
-      if (state.showAdvancedFilter) {
-        advancedFilterHtml = '<div class="advanced-filter">' +
-          '<div class="filter-row">' +
-          '<label class="filter-label">媒体类型：</label>' +
-          '<select class="filter-select" onchange="setMediaTypeFilter(this.value)">' +
-          '<option value=""' + (!state.advancedFilter.mediaType ? ' selected' : '') + '>全部</option>' +
-          '<option value="photo"' + (state.advancedFilter.mediaType === 'photo' ? ' selected' : '') + '>📷 图片</option>' +
-          '<option value="audio"' + (state.advancedFilter.mediaType === 'audio' ? ' selected' : '') + '>🎵 音频</option>' +
-          '<option value="voice"' + (state.advancedFilter.mediaType === 'voice' ? ' selected' : '') + '>🎤 语音</option>' +
-          '<option value="video"' + (state.advancedFilter.mediaType === 'video' ? ' selected' : '') + '>🎬 视频</option>' +
-          '<option value="document"' + (state.advancedFilter.mediaType === 'document' ? ' selected' : '') + '>📎 文档</option>' +
-          '<option value="none"' + (state.advancedFilter.mediaType === 'none' ? ' selected' : '') + '>无媒体</option>' +
-          '</select>' +
-          '</div>' +
-          '<div class="filter-row">' +
-          '<label class="filter-label">日期范围：</label>' +
-          '<input type="date" class="filter-input" value="' + (state.advancedFilter.dateFrom || '') + '" onchange="setDateFromFilter(this.value)" placeholder="开始日期">' +
-          '<span class="filter-separator">至</span>' +
-          '<input type="date" class="filter-input" value="' + (state.advancedFilter.dateTo || '') + '" onchange="setDateToFilter(this.value)" placeholder="结束日期">' +
-          '</div>' +
-          '<div class="filter-actions">' +
-          '<button class="filter-btn" onclick="applyAdvancedFilter()">应用筛选</button>' +
-          '<button class="filter-btn secondary" onclick="clearAdvancedFilter()">清除筛选</button>' +
-          '</div>' +
-          '</div>';
-      }
-      
-      // 排序和分页控件
-      var controlsHtml = '<div class="list-controls">' +
-        '<div class="sort-controls">' +
-        '<label class="control-label">排序：</label>' +
-        '<select class="control-select" onchange="changeSortBy(this.value)">' +
-        '<option value="time-desc"' + (state.sortBy === 'time-desc' ? ' selected' : '') + '>最新优先</option>' +
-        '<option value="time-asc"' + (state.sortBy === 'time-asc' ? ' selected' : '') + '>最旧优先</option>' +
-        '<option value="tags-desc"' + (state.sortBy === 'tags-desc' ? ' selected' : '') + '>标签多→少</option>' +
-        '<option value="tags-asc"' + (state.sortBy === 'tags-asc' ? ' selected' : '') + '>标签少→多</option>' +
-        '</select>' +
-        '</div>' +
-        '<div class="page-size-controls">' +
-        '<label class="control-label">每页：</label>' +
-        '<select class="control-select" onchange="changePageSize(this.value)">' +
+      // 右侧：视图控件
+      compactToolbarHtml += '<div class="toolbar-group">';
+      compactToolbarHtml += '<span class="group-label">视图:</span>';
+      compactToolbarHtml += '<select class="compact-select" onchange="changeSortBy(this.value)">' +
+        '<option value="time-desc"' + (state.sortBy === 'time-desc' ? ' selected' : '') + '>最新</option>' +
+        '<option value="time-asc"' + (state.sortBy === 'time-asc' ? ' selected' : '') + '>最旧</option>' +
+        '<option value="tags-desc"' + (state.sortBy === 'tags-desc' ? ' selected' : '') + '>标签多</option>' +
+        '<option value="tags-asc"' + (state.sortBy === 'tags-asc' ? ' selected' : '') + '>标签少</option>' +
+        '</select>';
+      compactToolbarHtml += '<select class="compact-select" onchange="changePageSize(this.value)">' +
         '<option value="20"' + (state.itemsPerPage === 20 ? ' selected' : '') + '>20条</option>' +
         '<option value="50"' + (state.itemsPerPage === 50 ? ' selected' : '') + '>50条</option>' +
         '<option value="100"' + (state.itemsPerPage === 100 ? ' selected' : '') + '>100条</option>' +
         '<option value="all"' + (state.itemsPerPage === 'all' ? ' selected' : '') + '>全部</option>' +
+        '</select>';
+      compactToolbarHtml += '<button class="compact-btn icon-btn" onclick="toggleFilterDrawer()" title="筛选">' +
+        '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z"/></svg>' +
+        (state.advancedFilter.mediaType || state.advancedFilter.dateFrom || state.advancedFilter.dateTo ? ' <span class="filter-badge"></span>' : '') +
+        '</button>';
+      compactToolbarHtml += '</div>';
+      
+      compactToolbarHtml += '</div>';
+      
+      // 抽屉式筛选面板
+      var filterDrawerHtml = '<div class="filter-drawer' + (state.showAdvancedFilter ? ' open' : '') + '">' +
+        '<div class="filter-drawer-overlay" onclick="toggleFilterDrawer()"></div>' +
+        '<div class="filter-drawer-content">' +
+        '<div class="filter-drawer-header">' +
+        '<h3>🔍 高级筛选</h3>' +
+        '<button class="filter-close" onclick="toggleFilterDrawer()">×</button>' +
+        '</div>' +
+        '<div class="filter-drawer-body">' +
+        '<div class="filter-section">' +
+        '<label class="filter-section-label">媒体类型</label>' +
+        '<select class="filter-drawer-select" onchange="setMediaTypeFilter(this.value)">' +
+        '<option value=""' + (!state.advancedFilter.mediaType ? ' selected' : '') + '>全部</option>' +
+        '<option value="photo"' + (state.advancedFilter.mediaType === 'photo' ? ' selected' : '') + '>📷 图片</option>' +
+        '<option value="audio"' + (state.advancedFilter.mediaType === 'audio' ? ' selected' : '') + '>🎵 音频</option>' +
+        '<option value="voice"' + (state.advancedFilter.mediaType === 'voice' ? ' selected' : '') + '>🎤 语音</option>' +
+        '<option value="video"' + (state.advancedFilter.mediaType === 'video' ? ' selected' : '') + '>🎬 视频</option>' +
+        '<option value="document"' + (state.advancedFilter.mediaType === 'document' ? ' selected' : '') + '>📎 文档</option>' +
+        '<option value="none"' + (state.advancedFilter.mediaType === 'none' ? ' selected' : '') + '>📄 无媒体</option>' +
         '</select>' +
         '</div>' +
-        '<div class="items-count">共 ' + allItems.length + ' 条</div>' +
+        '<div class="filter-section">' +
+        '<label class="filter-section-label">日期范围</label>' +
+        '<div class="filter-date-group">' +
+        '<input type="date" class="filter-drawer-input" value="' + (state.advancedFilter.dateFrom || '') + '" onchange="setDateFromFilter(this.value)" placeholder="开始日期">' +
+        '<span class="filter-date-sep">至</span>' +
+        '<input type="date" class="filter-drawer-input" value="' + (state.advancedFilter.dateTo || '') + '" onchange="setDateToFilter(this.value)" placeholder="结束日期">' +
+        '</div>' +
+        '</div>' +
+        '<div class="filter-section">' +
+        '<label class="filter-section-label">快捷选项</label>' +
+        '<div class="filter-shortcuts">' +
+        '<button class="filter-shortcut" onclick="setDateShortcut(\\'today\\')">今天</button>' +
+        '<button class="filter-shortcut" onclick="setDateShortcut(\\'week\\')">本周</button>' +
+        '<button class="filter-shortcut" onclick="setDateShortcut(\\'month\\')">本月</button>' +
+        '</div>' +
+        '</div>' +
+        '</div>' +
+        '<div class="filter-drawer-footer">' +
+        '<button class="filter-drawer-btn primary" onclick="applyFilterDrawer()">应用筛选</button>' +
+        '<button class="filter-drawer-btn secondary" onclick="clearFilterDrawer()">清除筛选</button>' +
+        '</div>' +
+        '</div>' +
         '</div>';
       
-      // 分页按钮
+      // 分页按钮 (保持原样)
       var paginationHtml = '';
-      if (state.itemsPerPage !== 'all') {
+      if (state.itemsPerPage !== 'all' && allItems.length > 0) {
         var totalPages = getTotalPages(allItems);
         if (totalPages > 1) {
           paginationHtml = '<div class="pagination">';
-          
-          // 上一页
           if (state.currentPage > 1) {
             paginationHtml += '<button class="page-btn" onclick="goToPage(' + (state.currentPage - 1) + ')">上一页</button>';
           }
-          
-          // 页码
           var startPage = Math.max(1, state.currentPage - 2);
           var endPage = Math.min(totalPages, state.currentPage + 2);
-          
           if (startPage > 1) {
             paginationHtml += '<button class="page-btn" onclick="goToPage(1)">1</button>';
             if (startPage > 2) {
               paginationHtml += '<span class="page-ellipsis">...</span>';
             }
           }
-          
           for (var i = startPage; i <= endPage; i++) {
             if (i === state.currentPage) {
               paginationHtml += '<button class="page-btn active">' + i + '</button>';
@@ -4375,24 +4842,20 @@ async function renderSPA(env) {
               paginationHtml += '<button class="page-btn" onclick="goToPage(' + i + ')">' + i + '</button>';
             }
           }
-          
           if (endPage < totalPages) {
             if (endPage < totalPages - 1) {
               paginationHtml += '<span class="page-ellipsis">...</span>';
             }
             paginationHtml += '<button class="page-btn" onclick="goToPage(' + totalPages + ')">' + totalPages + '</button>';
           }
-          
-          // 下一页
           if (state.currentPage < totalPages) {
             paginationHtml += '<button class="page-btn" onclick="goToPage(' + (state.currentPage + 1) + ')">下一页</button>';
           }
-          
           paginationHtml += '</div>';
         }
       }
       
-      return toolbarHtml + advancedFilterHtml + controlsHtml + itemsHtml + paginationHtml;
+      return compactToolbarHtml + filterDrawerHtml + itemsHtml + paginationHtml;
     }
     
     function renderModals() {
