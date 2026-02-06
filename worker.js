@@ -126,6 +126,7 @@ function restoreEntities(text, entities, mode = 'std') {
       result += (mode === 'tg') ? escapeV2(text[i]) : text[i];
     }
   }
+
   return result;
 }
 
@@ -313,8 +314,7 @@ async function fetchFavicon(url, preferredService = null) {
 
 async function getCollections(env) {
   try {
-    // 使用 cacheTtl: 60 秒，减少延迟
-    // 这会让 KV 优先从源读取而不是边缘缓存
+    // 使用 cacheTtl: 60 秒，符合 Cloudflare KV 最小要求
     const data = await env.NAV_KV.get('collections', { type: 'json', cacheTtl: 60 });
     return data || [];
   } catch (e) {
@@ -441,7 +441,7 @@ async function saveTagIds(env, tag, ids) {
 
 async function getMediaGroupCache(env, mediaGroupId) {
   try {
-    const data = await env.NAV_KV.get(`media_group_${mediaGroupId}`, { type: 'json', cacheTtl: 10 });
+    const data = await env.NAV_KV.get(`media_group_${mediaGroupId}`, { type: 'json', cacheTtl: 60 });
     return data || null;
   } catch (e) {
     return null;
@@ -907,9 +907,12 @@ async function handleChannelMessage(env, message, botConfig) {
 }
 
 // 处理媒体组消息（相册）
+// Telegram 发送媒体组时会快速连续发送多个请求
+// 我们收集所有消息，然后在 waitUntil 中延迟处理
 async function handleMediaGroupMessage(env, message, botConfig, chatType = 'channel') {
   const mediaGroupId = message.media_group_id;
-  const chatId = message.chat.id;
+  
+  console.log('Media group message:', mediaGroupId, 'message_id:', message.message_id);
   
   // 获取当前缓存的媒体组消息
   let groupCache = await getMediaGroupCache(env, mediaGroupId);
@@ -922,33 +925,52 @@ async function handleMediaGroupMessage(env, message, botConfig, chatType = 'chan
     };
   }
   
-  // 添加当前消息到缓存
-  groupCache.messages.push(message);
-  await saveMediaGroupCache(env, mediaGroupId, groupCache);
-  
-  // 等待 2 秒后处理（收集所有消息）
-  // 使用 Cloudflare Durable Objects 的 waitUntil 延迟处理
-  const processingDelay = 2000;
-  const timeSinceFirst = Date.now() - groupCache.firstMessageTime;
-  
-  // 如果已经等待足够时间或消息数量达到 10（Telegram 最大相册数）
-  if (timeSinceFirst >= processingDelay || groupCache.messages.length >= 10) {
-    // 避免重复处理
-    if (groupCache.processed) {
-      return { ok: true };
-    }
-    
-    groupCache.processed = true;
-    await saveMediaGroupCache(env, mediaGroupId, groupCache);
-    
-    // 处理整个媒体组
-    await processMediaGroup(env, groupCache.messages, botConfig, chatType);
-    
-    // 删除缓存
-    await deleteMediaGroupCache(env, mediaGroupId);
+  // 检查是否已经包含这条消息（避免重复）
+  const exists = groupCache.messages.find(m => m.message_id === message.message_id);
+  if (exists) {
+    console.log('Media group:', mediaGroupId, 'message already exists:', message.message_id);
+    return { ok: true };
   }
   
+  // 添加当前消息到缓存
+  groupCache.messages.push(message);
+  const messageCount = groupCache.messages.length;
+  
+  console.log('Media group:', mediaGroupId, 'collected:', messageCount, 'messages');
+  
+  // 保存缓存
+  await saveMediaGroupCache(env, mediaGroupId, groupCache);
+  
+  // 如果达到10条（Telegram最大限制），立即处理
+  if (messageCount >= 10 && !groupCache.processed) {
+    console.log('Media group:', mediaGroupId, 'reached max (10), processing immediately');
+    await finalizeMediaGroup(env, mediaGroupId, botConfig, chatType);
+  }
+  // 否则等待 waitUntil 延迟处理
+  
   return { ok: true };
+}
+
+// 最终处理媒体组
+async function finalizeMediaGroup(env, mediaGroupId, botConfig, chatType) {
+  const groupCache = await getMediaGroupCache(env, mediaGroupId);
+  
+  if (!groupCache || groupCache.processed) {
+    console.log('Media group:', mediaGroupId, 'already processed or not found');
+    return;
+  }
+  
+  // 标记为已处理
+  groupCache.processed = true;
+  await saveMediaGroupCache(env, mediaGroupId, groupCache);
+  
+  console.log('Finalizing media group:', mediaGroupId, 'with', groupCache.messages.length, 'messages');
+  
+  // 处理媒体组
+  await processMediaGroup(env, groupCache.messages, botConfig, chatType);
+  
+  // 删除缓存
+  await deleteMediaGroupCache(env, mediaGroupId);
 }
 
 // 处理收集完成的媒体组
@@ -1013,12 +1035,33 @@ async function processMediaGroup(env, messages, botConfig, chatType) {
       type: 'channel'
     };
   } else {
-    sourceInfo = {
-      user_id: firstMessage.from.id.toString(),
-      first_name: firstMessage.from.first_name,
-      username: firstMessage.from.username || null,
-      type: 'user'
-    };
+    // 私聊消息 - 检查是否是转发
+    if (firstMessage.forward_from) {
+      sourceInfo = {
+        username: firstMessage.forward_from.username || null,
+        first_name: firstMessage.forward_from.first_name || 'Unknown',
+        user_id: firstMessage.forward_from.id.toString()
+      };
+    } else if (firstMessage.forward_from_chat) {
+      sourceInfo = {
+        username: firstMessage.forward_from_chat.username || null,
+        first_name: firstMessage.forward_from_chat.title || 'Unknown',
+        user_id: firstMessage.forward_from_chat.id.toString()
+      };
+    } else if (firstMessage.forward_sender_name) {
+      sourceInfo = {
+        username: null,
+        first_name: firstMessage.forward_sender_name,
+        user_id: 'hidden'
+      };
+    } else {
+      sourceInfo = {
+        user_id: firstMessage.from.id.toString(),
+        first_name: firstMessage.from.first_name,
+        username: firstMessage.from.username || null,
+        type: 'user'
+      };
+    }
   }
   
   // 保存收藏项（媒体为数组）
@@ -1026,13 +1069,45 @@ async function processMediaGroup(env, messages, botConfig, chatType) {
     env,
     finalTags,
     content,
-    chatType === 'channel' ? 'telegram_channel' : 'telegram',
+    chatType === 'channel' ? 'telegram_channel' : (firstMessage.forward_from || firstMessage.forward_from_chat ? 'telegram_forward' : 'telegram'),
     sourceInfo,
     telegramMsgInfo,
     mediaArray  // 传入媒体数组
   );
   
   console.log('Media group saved:', item.id, 'media count:', mediaArray.length);
+  
+  // 如果是私聊，发送确认消息给用户
+  if (chatType === 'user') {
+    const tagsText = finalTags.map(t => `#${t}`).join(' ');
+    let sourceText = '';
+    if (firstMessage.forward_from || firstMessage.forward_from_chat || firstMessage.forward_sender_name) {
+      if (sourceInfo.username) sourceText = `\n📥 转发自: @${sourceInfo.username}`;
+      else if (sourceInfo.first_name) sourceText = `\n📥 转发自: ${sourceInfo.first_name}`;
+    }
+    
+    const mediaCountText = `${mediaArray.length} 个媒体文件`;
+    const previewContent = content ? (content.substring(0, 80).replace(/\n/g, ' ').replace(/```[\s\S]*?```/g, '[代码块]')) : mediaCountText;
+    
+    await sendMessage(botConfig.bot_token, chatId,
+      `✅ <b>已添加！</b>\n\n🏷️ ${tagsText}${sourceText}\n📝 ${escapeHtml(previewContent)}${content && content.length > 80 ? '...' : ''}\n\n<i>💡 提示：编辑原消息可自动同步更新</i>`,
+      {
+        reply_to_message_id: firstMessage.message_id,
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: '📄 查看', callback_data: `view_${item.id}` },
+              { text: '✏️ 编辑', callback_data: `edit_${item.id}` }
+            ],
+            [
+              { text: '➕ 继续添加', callback_data: 'act_add' },
+              { text: '🏠 主菜单', callback_data: 'act_menu' }
+            ]
+          ]
+        }
+      }
+    );
+  }
 }
 
 
@@ -1052,8 +1127,8 @@ async function handleTelegramMessage(env, message, botConfig) {
   const stateKey = `state_${userId}`;
   let state = null;
   try {
-    // state 需要即时读取，使用最短的 cacheTtl
-    state = await env.NAV_KV.get(stateKey, { type: 'json', cacheTtl: 10 });
+    // state 需要即时读取，使用 cacheTtl: 60（最小允许值）
+    state = await env.NAV_KV.get(stateKey, { type: 'json', cacheTtl: 60 });
   } catch (e) {
     console.error('Get state error:', e);
   }
@@ -1624,7 +1699,7 @@ async function handleEditContent(env, chatId, message, itemId, botConfig) {
 
 // ============== 路由处理 ==============
 
-async function handleTelegramWebhook(request, env) {
+async function handleTelegramWebhook(request, env, ctx) {
   const botConfig = await getBotConfig(env);
   
   if (!botConfig.bot_token || !botConfig.webhook_secret) {
@@ -1639,7 +1714,32 @@ async function handleTelegramWebhook(request, env) {
   try {
     const update = await request.json();
     console.log('Webhook update:', JSON.stringify(update));
+    
+    // 立即处理更新
     await handleTelegramUpdate(env, update, botConfig);
+    
+    // 如果是媒体组消息，使用 waitUntil 延迟检查是否需要最终处理
+    const message = update.message || update.channel_post;
+    if (message && message.media_group_id) {
+      const mediaGroupId = message.media_group_id;
+      const chatType = update.channel_post ? 'channel' : 'user';
+      
+      // 使用 waitUntil 延迟 2 秒后检查并处理媒体组
+      ctx.waitUntil(
+        (async () => {
+          // 等待 2 秒
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          
+          // 检查并处理媒体组
+          const groupCache = await getMediaGroupCache(env, mediaGroupId);
+          if (groupCache && !groupCache.processed) {
+            console.log('WaitUntil: Processing media group', mediaGroupId, 'with', groupCache.messages.length, 'messages');
+            await finalizeMediaGroup(env, mediaGroupId, botConfig, chatType);
+          }
+        })()
+      );
+    }
+    
     return new Response('OK');
   } catch (e) {
     console.error('Webhook error:', e.message, e.stack);
@@ -1750,9 +1850,10 @@ async function handleApiData(request, env, url) {
     },
     siteConfig
   }, 200, {
-    'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+    'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
     'Pragma': 'no-cache',
-    'Expires': '0'
+    'Expires': '0',
+    'CDN-Cache-Control': 'no-store'
   });
 }
 
@@ -5102,9 +5203,7 @@ async function renderSPA(env) {
           // 静态贴纸（.webp）
           html += '<img data-src="' + stickerSrc + '" alt="贴纸" class="sticker-image lazy-image">';
         }
-        if (media.emoji) {
-          html += '<div class="sticker-emoji">' + media.emoji + '</div>';
-        }
+        // 不显示 emoji，这是 Telegram 的元数据，不需要在前端展示
         html += '</div>';
       } else if (media.type === 'audio' || media.type === 'voice') {
         // 音频/语音
@@ -6168,7 +6267,7 @@ export default {
       
       // Telegram Webhook
       if (path === '/telegram-webhook' && method === 'POST') {
-        return handleTelegramWebhook(request, env);
+        return handleTelegramWebhook(request, env, ctx);
       }
       
       // 管理登录
@@ -6246,9 +6345,15 @@ export default {
         return new Response(html, {
           headers: { 
             'Content-Type': 'text/html; charset=utf-8',
-            'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+            // 禁用所有缓存（浏览器 + CDN）
+            'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
             'Pragma': 'no-cache',
-            'Expires': '0'
+            'Expires': '0',
+            // 禁用 Cloudflare 边缘缓存
+            'CDN-Cache-Control': 'no-store',
+            'Cloudflare-CDN-Cache-Control': 'no-store',
+            // 禁用浏览器缓存
+            'Surrogate-Control': 'no-store'
           }
         });
       }
