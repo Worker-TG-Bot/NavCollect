@@ -126,7 +126,7 @@ function restoreEntities(text, entities, mode = 'std') {
       result += (mode === 'tg') ? escapeV2(text[i]) : text[i];
     }
   }
-
+  
   return result;
 }
 
@@ -2749,6 +2749,97 @@ async function renderSPA(env) {
         font-size: 20px;
       }
     }
+    
+    /* 图片预览弹窗 */
+    .image-viewer-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.95);
+      z-index: 9999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      animation: fadeIn 0.2s ease-in-out;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+    .image-viewer-content {
+      position: relative;
+      max-width: 90vw;
+      max-height: 90vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .image-viewer-img {
+      max-width: 100%;
+      max-height: 90vh;
+      object-fit: contain;
+      border-radius: 8px;
+    }
+    .image-viewer-close {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      width: 40px;
+      height: 40px;
+      background: rgba(255, 255, 255, 0.2);
+      border: none;
+      border-radius: 50%;
+      color: white;
+      font-size: 24px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.2s;
+      z-index: 10000;
+    }
+    .image-viewer-close:hover {
+      background: rgba(255, 255, 255, 0.3);
+    }
+    .image-viewer-nav {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 50px;
+      height: 50px;
+      background: rgba(255, 255, 255, 0.2);
+      border: none;
+      border-radius: 50%;
+      color: white;
+      font-size: 28px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.2s;
+    }
+    .image-viewer-nav:hover {
+      background: rgba(255, 255, 255, 0.3);
+    }
+    .image-viewer-nav.prev {
+      left: 20px;
+    }
+    .image-viewer-nav.next {
+      right: 20px;
+    }
+    .image-viewer-counter {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0, 0, 0, 0.6);
+      color: white;
+      padding: 8px 16px;
+      border-radius: 20px;
+      font-size: 14px;
+    }
     .media-audio {
       padding: 16px;
       background: var(--bg);
@@ -5186,7 +5277,7 @@ async function renderSPA(env) {
       if (media.type === 'photo') {
         // 图片：使用代理，不再用 base64
         var imgSrc = '/api/file/' + media.fileId;
-        html += '<img data-src="' + imgSrc + '" alt="图片" class="media-image lazy-image" onclick="window.open(this.src, \\'_blank\\')">';
+        html += '<img data-src="' + imgSrc + '" alt="图片" class="media-image lazy-image" onclick="openSingleImageViewer(this.src)">';
       } else if (media.type === 'sticker') {
         // 贴纸：支持静态和动态贴纸
         var stickerSrc = '/api/file/' + media.fileId;
@@ -5337,9 +5428,146 @@ async function renderSPA(env) {
       if (!carousel) return;
       
       var slides = carousel.querySelectorAll('.carousel-slide');
-      var img = slides[index].querySelector('img');
-      if (img && img.src) {
-        window.open(img.src, '_blank');
+      var images = [];
+      
+      // 收集所有图片
+      for (var i = 0; i < slides.length; i++) {
+        var img = slides[i].querySelector('img');
+        if (img) {
+          images.push(img.src || img.getAttribute('data-src'));
+        }
+      }
+      
+      if (images.length === 0) return;
+      
+      // 创建预览弹窗
+      var overlay = document.createElement('div');
+      overlay.className = 'image-viewer-overlay';
+      overlay.onclick = function(e) {
+        if (e.target === overlay) {
+          closeImageViewer();
+        }
+      };
+      
+      var content = document.createElement('div');
+      content.className = 'image-viewer-content';
+      
+      var img = document.createElement('img');
+      img.className = 'image-viewer-img';
+      img.src = images[index];
+      content.appendChild(img);
+      
+      // 关闭按钮
+      var closeBtn = document.createElement('button');
+      closeBtn.className = 'image-viewer-close';
+      closeBtn.innerHTML = '×';
+      closeBtn.onclick = closeImageViewer;
+      overlay.appendChild(closeBtn);
+      
+      // 如果有多张图片，添加导航按钮
+      if (images.length > 1) {
+        var currentIndex = index;
+        
+        // 上一张按钮
+        var prevBtn = document.createElement('button');
+        prevBtn.className = 'image-viewer-nav prev';
+        prevBtn.innerHTML = '‹';
+        prevBtn.onclick = function() {
+          currentIndex = (currentIndex - 1 + images.length) % images.length;
+          img.src = images[currentIndex];
+          updateCounter();
+        };
+        overlay.appendChild(prevBtn);
+        
+        // 下一张按钮
+        var nextBtn = document.createElement('button');
+        nextBtn.className = 'image-viewer-nav next';
+        nextBtn.innerHTML = '›';
+        nextBtn.onclick = function() {
+          currentIndex = (currentIndex + 1) % images.length;
+          img.src = images[currentIndex];
+          updateCounter();
+        };
+        overlay.appendChild(nextBtn);
+        
+        // 计数器
+        var counter = document.createElement('div');
+        counter.className = 'image-viewer-counter';
+        overlay.appendChild(counter);
+        
+        function updateCounter() {
+          counter.textContent = (currentIndex + 1) + ' / ' + images.length;
+        }
+        updateCounter();
+        
+        // 键盘导航
+        document.addEventListener('keydown', handleKeyPress);
+        function handleKeyPress(e) {
+          if (e.key === 'ArrowLeft') {
+            prevBtn.click();
+          } else if (e.key === 'ArrowRight') {
+            nextBtn.click();
+          } else if (e.key === 'Escape') {
+            closeImageViewer();
+          }
+        }
+        
+        overlay._handleKeyPress = handleKeyPress;
+      }
+      
+      overlay.appendChild(content);
+      document.body.appendChild(overlay);
+      
+      function closeImageViewer() {
+        if (overlay._handleKeyPress) {
+          document.removeEventListener('keydown', overlay._handleKeyPress);
+        }
+        overlay.remove();
+      }
+    }
+    
+    // 单张图片预览
+    function openSingleImageViewer(imageSrc) {
+      if (!imageSrc) return;
+      
+      // 创建预览弹窗
+      var overlay = document.createElement('div');
+      overlay.className = 'image-viewer-overlay';
+      overlay.onclick = function(e) {
+        if (e.target === overlay) {
+          closeViewer();
+        }
+      };
+      
+      var content = document.createElement('div');
+      content.className = 'image-viewer-content';
+      
+      var img = document.createElement('img');
+      img.className = 'image-viewer-img';
+      img.src = imageSrc;
+      content.appendChild(img);
+      
+      // 关闭按钮
+      var closeBtn = document.createElement('button');
+      closeBtn.className = 'image-viewer-close';
+      closeBtn.innerHTML = '×';
+      closeBtn.onclick = closeViewer;
+      overlay.appendChild(closeBtn);
+      
+      // 键盘 ESC 关闭
+      function handleKeyPress(e) {
+        if (e.key === 'Escape') {
+          closeViewer();
+        }
+      }
+      document.addEventListener('keydown', handleKeyPress);
+      
+      overlay.appendChild(content);
+      document.body.appendChild(overlay);
+      
+      function closeViewer() {
+        document.removeEventListener('keydown', handleKeyPress);
+        overlay.remove();
       }
     }
 
