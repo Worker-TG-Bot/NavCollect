@@ -1815,6 +1815,7 @@ async function handleApiData(request, env, url) {
   const metadata = await getMetadata(env);
   const siteConfig = await getSiteConfig(env);
   const collections = await getCollections(env);
+  const botConfig = await getBotConfig(env);
   
   let filteredItems = [...collections].reverse();
   
@@ -1848,7 +1849,8 @@ async function handleApiData(request, env, url) {
       tag_list: metadata.tag_list,
       last_updated: metadata.last_updated
     },
-    siteConfig
+    siteConfig,
+    botConfigured: !!botConfig.bot_token && botConfig.webhook_set
   }, 200, {
     'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
     'Pragma': 'no-cache',
@@ -2212,17 +2214,8 @@ self.addEventListener('activate', event => {
 }
 
 async function renderSPA(env) {
+  // 只获取基础配置（用于页面元信息和 Logo）
   const siteConfig = await getSiteConfig(env);
-  const metadata = await getMetadata(env);
-  const collections = await getCollections(env);
-  const botConfig = await getBotConfig(env);
-  
-  const initialData = {
-    items: [...collections].reverse(),
-    metadata,
-    siteConfig,
-    botConfigured: !!botConfig.bot_token && botConfig.webhook_set
-  };
 
   const logoHtml = renderLogoHtml(siteConfig);
   const faviconHref = getFaviconHref(siteConfig);
@@ -4164,7 +4157,6 @@ async function renderSPA(env) {
   <div id="toast" class="toast"></div>
   <div id="loading" class="loading-overlay"><div class="loading-spinner"></div></div>
 
-  <script id="init-data" type="application/json">${JSON.stringify(initialData)}</script>
   <script>
     // ========== State ==========
     var state = {
@@ -4892,6 +4884,9 @@ async function renderSPA(env) {
           if (data.siteConfig) {
             state.siteConfig = data.siteConfig;
             syncFooterItems();
+          }
+          if (data.botConfigured !== undefined) {
+            state.botConfigured = data.botConfigured;
           }
           return true;
         });
@@ -6400,47 +6395,44 @@ async function renderSPA(env) {
     function init() {
       document.documentElement.className = state.theme;
       
-      // 从页面获取初始数据
-      var initScript = document.getElementById('init-data');
-      if (initScript) {
-        try {
-          var initData = JSON.parse(initScript.textContent);
-          state.items = initData.items || [];
-          state.metadata = initData.metadata || {};
-          state.siteConfig = initData.siteConfig || {};
-          state.botConfigured = initData.botConfigured || false;
-          state.version = initData.metadata?.version || 0;
-          syncFooterItems();
-        } catch (e) {
-          console.error('Parse init data error:', e);
+      // 显示加载动画
+      showLoading();
+      
+      // 异步加载初始数据
+      loadData().then(function() {
+        hideLoading();
+        
+        var path = window.location.pathname;
+        var params = new URLSearchParams(window.location.search);
+        if (params.get('tag')) state.currentTag = params.get('tag');
+        if (params.get('source')) state.currentSource = params.get('source');
+        if (params.get('q')) state.currentQ = params.get('q');
+        
+        if (path === '/admin' || path === '/admin/') {
+          state.page = 'admin';
+          checkAuth().then(function(data) { 
+            state.isAdmin = data.authenticated; 
+            render(); 
+          });
+        } else if (path === '/tags' || path === '/tags/') {
+          state.page = 'tags';
+          render();
+        } else if (path === '/config' || path === '/config/') {
+          state.page = 'config';
+          checkAuth().then(function(data) { state.isAdmin = data.authenticated; render(); });
+        } else if (path === '/footer' || path === '/footer/') {
+          state.page = 'footer';
+          checkAuth().then(function(data) { state.isAdmin = data.authenticated; render(); });
+        } else {
+          state.page = 'home';
+          render();
         }
-      }
-      
-      var path = window.location.pathname;
-      var params = new URLSearchParams(window.location.search);
-      if (params.get('tag')) state.currentTag = params.get('tag');
-      if (params.get('source')) state.currentSource = params.get('source');
-      if (params.get('q')) state.currentQ = params.get('q');
-      
-      if (path === '/admin' || path === '/admin/') {
-        state.page = 'admin';
-        checkAuth().then(function(data) { 
-          state.isAdmin = data.authenticated; 
-          render(); 
-        });
-      } else if (path === '/tags' || path === '/tags/') {
-        state.page = 'tags';
+      }).catch(function(err) {
+        hideLoading();
+        console.error('Failed to load initial data:', err);
+        // 即使加载失败也渲染页面（显示空状态）
         render();
-      } else if (path === '/config' || path === '/config/') {
-        state.page = 'config';
-        checkAuth().then(function(data) { state.isAdmin = data.authenticated; render(); });
-      } else if (path === '/footer' || path === '/footer/') {
-        state.page = 'footer';
-        checkAuth().then(function(data) { state.isAdmin = data.authenticated; render(); });
-      } else {
-        state.page = 'home';
-        render();
-      }
+      });
       
       window.addEventListener('popstate', function() {
         var path = window.location.pathname;
@@ -6575,15 +6567,11 @@ export default {
         return new Response(html, {
           headers: { 
             'Content-Type': 'text/html; charset=utf-8',
-            // 禁用所有缓存（浏览器 + CDN）
-            'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
-            'Pragma': 'no-cache',
-            'Expires': '0',
-            // 禁用 Cloudflare 边缘缓存
-            'CDN-Cache-Control': 'no-store',
-            'Cloudflare-CDN-Cache-Control': 'no-store',
-            // 禁用浏览器缓存
-            'Surrogate-Control': 'no-store'
+            // HTML 可以缓存（因为数据已分离，通过 API 异步加载）
+            // 浏览器缓存 1 小时，CDN 缓存 5 分钟
+            'Cache-Control': 'public, max-age=3600, s-maxage=300',
+            // 允许 CDN 缓存
+            'CDN-Cache-Control': 'public, max-age=300'
           }
         });
       }
