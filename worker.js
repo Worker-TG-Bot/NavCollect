@@ -2517,12 +2517,13 @@ async function renderSPA(env) {
     .item-tags { 
       display: flex; 
       flex-wrap: wrap; 
-      gap: 6px; 
+      gap: 8px; /* 增加标签间距从 6px 到 8px */
+      line-height: 1.8; /* 增加行高，让换行时垂直间距更大 */
     }
     
     /* 内容标签样式 - 小号、紧凑、渐变 */
     .item-tag {
-      padding: 3px 8px;
+      padding: 4px 10px; /* 增加内边距，从 3px 8px 改为 4px 10px */
       background: linear-gradient(135deg, #eef2ff 0%, #dbeafe 100%);
       color: #4f46e5;
       border-radius: 10px;
@@ -2533,6 +2534,7 @@ async function renderSPA(env) {
       transition: all 0.2s;
       letter-spacing: 0.3px;
       box-shadow: 0 1px 2px rgba(99, 102, 241, 0.1);
+      margin: 2px 0; /* 增加上下外边距，让垂直方向更宽松 */
     }
     .dark .item-tag { 
       background: linear-gradient(135deg, rgba(99,102,241,0.25) 0%, rgba(59,130,246,0.25) 100%);
@@ -2579,7 +2581,7 @@ async function renderSPA(env) {
       font-weight: 500;
       cursor: pointer;
       transition: all 0.2s;
-      margin: 0 2px;
+      margin: 2px 3px; /* 增加上下左右间距 */
     }
     .dark .inline-tag { background: rgba(99,102,241,0.2); }
     .inline-tag:hover { background: var(--primary); color: white; }
