@@ -1,4 +1,3 @@
-
 /**
  * NavCollect - 个人网站导航收藏系统
  * Cloudflare Worker 单文件实现 v4.4
@@ -42,10 +41,42 @@ function formatRelativeTime(timestamp) {
   return formatTime(timestamp).split(' ')[0];
 }
 
-function parseTags(text) {
-  const hashTags = text.match(/#[\w\u4e00-\u9fa5]+/g) || [];
-  const tags = hashTags.map(t => t.slice(1).toLowerCase());
-  return [...new Set(tags)];
+function parseTags(text, entities = []) {
+  // 找出所有代码块的位置范围
+  const codeBlocks = [];
+  if (entities && entities.length > 0) {
+    for (const entity of entities) {
+      if (entity.type === 'pre' || entity.type === 'code') {
+        codeBlocks.push({
+          start: entity.offset,
+          end: entity.offset + entity.length
+        });
+      }
+    }
+  }
+  
+  // 检查位置是否在代码块内
+  function isInCodeBlock(position) {
+    return codeBlocks.some(block => position >= block.start && position < block.end);
+  }
+  
+  // 提取所有 hashtag 及其位置
+  const hashTagMatches = [];
+  const regex = /#[\w\u4e00-\u9fa5]+/g;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    hashTagMatches.push({
+      tag: match[0],
+      position: match.index
+    });
+  }
+  
+  // 过滤掉代码块内的标签
+  const validTags = hashTagMatches
+    .filter(m => !isInCodeBlock(m.position))
+    .map(m => m.tag.slice(1).toLowerCase());
+  
+  return [...new Set(validTags)];
 }
 
 function removeTagsFromContent(text) {
@@ -744,19 +775,20 @@ async function handleEditedMessage(env, message, botConfig) {
   }
   
   // 提取新内容并转换为标准 Markdown
-  let content = message.text || message.caption || '';
+  let rawText = message.text || message.caption || '';
   const entities = message.entities || message.caption_entities || [];
   
+  let content = rawText;
   if (entities.length > 0) {
-    content = restoreEntities(content, entities, 'std');
+    content = restoreEntities(rawText, entities, 'std');
   }
   
   if (!content.trim()) {
     return { ok: true };
   }
   
-  // 解析标签（提取但不删除原文中的标签）
-  const tags = parseTags(content);
+  // 解析标签（提取但不删除原文中的标签，使用原始文本和 entities）
+  const tags = parseTags(rawText, entities);
   const finalTags = tags.length > 0 ? tags : existingItem.tags;
   
   // 更新收藏（保留原文中的标签）
@@ -804,19 +836,20 @@ async function handleEditedChannelMessage(env, message, botConfig) {
   }
   
   // 提取新内容并转换为标准 Markdown
-  let content = message.text || message.caption || '';
+  let rawText = message.text || message.caption || '';
   const entities = message.entities || message.caption_entities || [];
   
+  let content = rawText;
   if (entities.length > 0) {
-    content = restoreEntities(content, entities, 'std');
+    content = restoreEntities(rawText, entities, 'std');
   }
   
   if (!content.trim()) {
     return { ok: true };
   }
   
-  // 解析标签（提取但不删除原文中的标签）
-  const tags = parseTags(content);
+  // 解析标签（提取但不删除原文中的标签，使用原始文本和 entities）
+  const tags = parseTags(rawText, entities);
   const finalTags = tags.length > 0 ? tags : existingItem.tags;
   
   // 更新收藏（保留原文中的标签）
@@ -826,6 +859,7 @@ async function handleEditedChannelMessage(env, message, botConfig) {
   
   return { ok: true };
 }
+
 
 // 处理 Telegram 频道消息
 async function handleChannelMessage(env, message, botConfig) {
@@ -853,11 +887,12 @@ async function handleChannelMessage(env, message, botConfig) {
   }
   
   // 提取内容并转换为标准 Markdown
-  let content = message.text || message.caption || '';
+  let rawText = message.text || message.caption || '';
   const entities = message.entities || message.caption_entities || [];
   
+  let content = rawText;
   if (entities.length > 0) {
-    content = restoreEntities(content, entities, 'std');
+    content = restoreEntities(rawText, entities, 'std');
   }
   
   // 允许纯媒体消息（无文字）
@@ -865,8 +900,8 @@ async function handleChannelMessage(env, message, botConfig) {
     return { ok: true };
   }
   
-  // 解析标签（提取但不删除原文中的标签）
-  const tags = parseTags(content);
+  // 解析标签（提取但不删除原文中的标签，使用原始文本和 entities）
+  const tags = parseTags(rawText, entities);
   
   // 默认标签 + 频道标签
   const finalTags = tags.length > 0 ? tags : ['channel'];
@@ -994,15 +1029,16 @@ async function processMediaGroup(env, messages, botConfig, chatType) {
   }
   
   // 提取第一条消息的文字内容
-  let content = messages[0].text || messages[0].caption || '';
+  let rawText = messages[0].text || messages[0].caption || '';
   const entities = messages[0].entities || messages[0].caption_entities || [];
   
+  let content = rawText;
   if (entities.length > 0) {
-    content = restoreEntities(content, entities, 'std');
+    content = restoreEntities(rawText, entities, 'std');
   }
   
-  // 解析标签
-  const tags = parseTags(content);
+  // 解析标签（使用原始文本和 entities）
+  const tags = parseTags(rawText, entities);
   const finalTags = tags.length > 0 ? tags : (chatType === 'channel' ? ['channel'] : ['media']);
   
   // 频道消息添加频道标签
@@ -1590,7 +1626,8 @@ async function handleAddContent(env, chatId, message, botConfig) {
     return await handleMediaGroupMessage(env, message, botConfig, 'user');
   }
   
-  let content = message.text || message.caption || '';
+  let rawText = message.text || message.caption || '';
+  let content = rawText;
   let sourceInfo = null;
   let mediaInfo = null;
   
@@ -1622,7 +1659,7 @@ async function handleAddContent(env, chatId, message, botConfig) {
   // 使用 restoreEntities 转换 Telegram entities 为标准 Markdown
   const entities = message.entities || message.caption_entities || [];
   if (entities.length > 0) {
-    content = restoreEntities(content, entities, 'std');
+    content = restoreEntities(rawText, entities, 'std');
   }
   
   // 允许纯媒体消息（无文字）
@@ -1630,7 +1667,7 @@ async function handleAddContent(env, chatId, message, botConfig) {
     return sendMessage(botConfig.bot_token, chatId, '❌ 内容不能为空');
   }
   
-  const tags = parseTags(content);
+  const tags = parseTags(rawText, entities);
   const finalTags = tags.length > 0 ? tags : ['inbox'];
   
   // 保存 Telegram 消息信息
@@ -1672,13 +1709,19 @@ async function handleAddContent(env, chatId, message, botConfig) {
 }
 
 async function handleEditContent(env, chatId, message, itemId, botConfig) {
-  const content = message.text || '';
+  const rawText = message.text || '';
+  const entities = message.entities || [];
+  
+  let content = rawText;
+  if (entities.length > 0) {
+    content = restoreEntities(rawText, entities, 'std');
+  }
   
   if (!content.trim()) {
     return sendMessage(botConfig.bot_token, chatId, '❌ 内容不能为空');
   }
   
-  const tags = parseTags(content);
+  const tags = parseTags(rawText, entities);
   const finalTags = tags.length > 0 ? tags : ['inbox'];
   
   const item = await editItem(env, itemId, finalTags, content);
