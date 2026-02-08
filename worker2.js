@@ -4788,8 +4788,17 @@ async function renderSPA(env) {
         history.pushState({ page: page }, '', url);
       }
       
-      render();
-      window.scrollTo(0, 0);
+      // 如果导航到需要认证的页面，先检查登录状态
+      if (page === 'admin' || page === 'config' || page === 'footer' || page === 'preview-config') {
+        checkAuth().then(function(data) {
+          state.isAdmin = data.authenticated;
+          render();
+          window.scrollTo(0, 0);
+        });
+      } else {
+        render();
+        window.scrollTo(0, 0);
+      }
     }
     
     function filterByTag(tag) {
@@ -7099,13 +7108,37 @@ async function renderSPA(env) {
         state.currentTag = params.get('tag') || '';
         state.currentSource = params.get('source') || '';
         state.currentQ = params.get('q') || '';
-        if (path === '/admin' || path === '/admin/') state.page = 'admin';
-        else if (path === '/tags' || path === '/tags/') state.page = 'tags';
-        else if (path === '/config' || path === '/config/') state.page = 'config';
-        else if (path === '/footer' || path === '/footer/') state.page = 'footer';
-        else if (path === '/preview-config' || path === '/preview-config/') state.page = 'preview-config';
-        else state.page = 'home';
-        render();
+        if (path === '/admin' || path === '/admin/') {
+          state.page = 'admin';
+          checkAuth().then(function(data) {
+            state.isAdmin = data.authenticated;
+            render();
+          });
+        } else if (path === '/tags' || path === '/tags/') {
+          state.page = 'tags';
+          render();
+        } else if (path === '/config' || path === '/config/') {
+          state.page = 'config';
+          checkAuth().then(function(data) {
+            state.isAdmin = data.authenticated;
+            render();
+          });
+        } else if (path === '/footer' || path === '/footer/') {
+          state.page = 'footer';
+          checkAuth().then(function(data) {
+            state.isAdmin = data.authenticated;
+            render();
+          });
+        } else if (path === '/preview-config' || path === '/preview-config/') {
+          state.page = 'preview-config';
+          checkAuth().then(function(data) {
+            state.isAdmin = data.authenticated;
+            render();
+          });
+        } else {
+          state.page = 'home';
+          render();
+        }
       });
     }
     
