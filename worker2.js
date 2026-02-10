@@ -79,6 +79,315 @@ function parseTags(text, entities = []) {
   return [...new Set(validTags)];
 }
 
+// ============== 工具函数模块 ==============
+
+// 通用的消息内容和标签提取函数
+function parseMessageContent(message) {
+  const rawText = message.text || message.caption || '';
+  const entities = message.entities || message.caption_entities || [];
+  
+  let content = rawText;
+  if (entities.length > 0) {
+    content = restoreEntities(rawText, entities, 'std');
+  }
+  
+  const tags = parseTags(rawText, entities);
+  
+  return {
+    rawText,
+    entities,
+    content,
+    tags
+  };
+}
+
+// 提取消息来源信息
+function extractSourceInfo(message) {
+  if (message.forward_from) {
+    return {
+      username: message.forward_from.username || null,
+      first_name: message.forward_from.first_name || 'Unknown',
+      user_id: message.forward_from.id.toString(),
+      type: 'user'
+    };
+  }
+  
+  if (message.forward_from_chat) {
+    return {
+      username: message.forward_from_chat.username || null,
+      first_name: message.forward_from_chat.title || 'Unknown',
+      user_id: message.forward_from_chat.id.toString(),
+      type: 'channel'
+    };
+  }
+  
+  if (message.forward_sender_name) {
+    return {
+      username: null,
+      first_name: message.forward_sender_name,
+      user_id: 'hidden',
+      type: 'user'
+    };
+  }
+  
+  // 非转发消息
+  if (message.from) {
+    return {
+      user_id: message.from.id.toString(),
+      first_name: message.from.first_name,
+      username: message.from.username || null,
+      type: 'user'
+    };
+  }
+  
+  return null;
+}
+
+// 生成频道标签
+function generateChannelTag(chatTitle) {
+  if (!chatTitle) return null;
+  
+  const channelTag = chatTitle.toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fa5]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '');
+  
+  return channelTag ? `channel_${channelTag}` : null;
+}
+
+// 创建 Telegram 消息信息对象
+function createTelegramMsgInfo(message, chatType, chatTitle = null, mediaGroupId = null) {
+  return {
+    chat_id: message.chat.id,
+    message_id: message.message_id,
+    chat_type: chatType,
+    channel_title: chatType === 'channel' ? chatTitle : null,
+    media_group_id: mediaGroupId
+  };
+}
+
+// 创建频道来源信息对象
+function createChannelSourceInfo(message, chatTitle) {
+  return {
+    channel_id: message.chat.id.toString(),
+    channel_title: chatTitle,
+    channel_username: message.chat.username || null,
+    type: 'channel'
+  };
+}
+
+// ============== Telegram 按钮工具 ==============
+
+// 创建按钮行
+function createButton(text, callbackData) {
+  return { text, callback_data: callbackData };
+}
+
+// 创建标准按钮组
+const TelegramButtons = {
+  mainMenu: () => [[createButton('🏠 主菜单', 'act_menu')]],
+  
+  cancel: () => [[createButton('❌ 取消', 'act_menu')]],
+  
+  viewEdit: (itemId) => [
+    [
+      createButton('📄 查看', `view_${itemId}`),
+      createButton('✏️ 编辑', `edit_${itemId}`)
+    ],
+    [
+      createButton('➕ 继续添加', 'act_add'),
+      createButton('🏠 主菜单', 'act_menu')
+    ]
+  ],
+  
+  viewDetail: (itemId) => [[
+    createButton('📄 查看详情', `view_${itemId}`),
+    createButton('🏠 主菜单', 'act_menu')
+  ]],
+  
+  viewOnly: (itemId) => [[createButton('📄 查看', `view_${itemId}`)]]
+};
+
+// ============== API 服务层 ==============
+
+// 统一的 API 调用包装器（带加载和错误处理）
+async function apiCallWithUI(method, endpoint, data, options = {}) {
+  const {
+    successMessage,
+    errorMessage = '操作失败',
+    onSuccess,
+    showLoading: shouldShowLoading = true
+  } = options;
+  
+  if (shouldShowLoading) showLoading();
+  
+  try {
+    const result = await apiCall(method, endpoint, data);
+    hideLoading();
+    
+    if (result.success) {
+      if (successMessage) showToast(successMessage);
+      if (onSuccess) onSuccess(result);
+      return result;
+    } else {
+      showToast(result.error || errorMessage);
+      return result;
+    }
+  } catch (error) {
+    hideLoading();
+    showToast(errorMessage);
+    throw error;
+  }
+}
+
+// 配置保存通用函数
+async function saveConfig(endpoint, configGetter, successMessage) {
+  const config = configGetter();
+  return apiCallWithUI('POST', endpoint, config, {
+    successMessage,
+    errorMessage: '保存失败',
+    onSuccess: (data) => {
+      if (data.config) {
+        state.siteConfig = data.config;
+      }
+    }
+  });
+}
+
+// ============== 表单组件系统 ==============
+
+// 创建表单字段
+const FormField = {
+  text: (id, label, value = '', placeholder = '', hint = '') => `
+    <div class="form-group">
+      <label class="form-label">${label}</label>
+      <input type="text" class="form-input" id="${id}" value="${escapeHtml(value)}" placeholder="${placeholder}">
+      ${hint ? `<div class="form-hint">${hint}</div>` : ''}
+    </div>
+  `,
+  
+  textarea: (id, label, value = '', placeholder = '', hint = '') => `
+    <div class="form-group">
+      <label class="form-label">${label}</label>
+      <textarea class="form-textarea" id="${id}" placeholder="${placeholder}">${escapeHtml(value)}</textarea>
+      ${hint ? `<div class="form-hint">${hint}</div>` : ''}
+    </div>
+  `,
+  
+  select: (id, label, options, selectedValue = '', hint = '') => {
+    const optionsHtml = options.map(opt => {
+      const value = typeof opt === 'string' ? opt : opt.value;
+      const text = typeof opt === 'string' ? opt : opt.text;
+      const selected = value === selectedValue ? ' selected' : '';
+      return `<option value="${value}"${selected}>${text}</option>`;
+    }).join('');
+    
+    return `
+      <div class="form-group">
+        <label class="form-label">${label}</label>
+        <select class="form-select" id="${id}">${optionsHtml}</select>
+        ${hint ? `<div class="form-hint">${hint}</div>` : ''}
+      </div>
+    `;
+  },
+  
+  checkbox: (id, label, checked = false, hint = '') => `
+    <div class="form-group">
+      <label class="checkbox-label">
+        <input type="checkbox" id="${id}" ${checked ? 'checked' : ''}>
+        <span>${label}</span>
+      </label>
+      ${hint ? `<div class="form-hint">${hint}</div>` : ''}
+    </div>
+  `,
+  
+  file: (id, label, accept = '', hint = '') => `
+    <div class="form-group">
+      <label class="form-label">${label}</label>
+      <input type="file" class="form-input" id="${id}" accept="${accept}">
+      ${hint ? `<div class="form-hint">${hint}</div>` : ''}
+    </div>
+  `
+};
+
+// 创建配置区块
+function configSection(title, content) {
+  return `
+    <div class="config-section">
+      <div class="config-title">${title}</div>
+      ${content}
+    </div>
+  `;
+}
+
+// 创建按钮
+function actionButton(text, onclick, className = 'btn-primary', icon = '') {
+  return `<button class="btn ${className}" onclick="${onclick}">${icon}${text}</button>`;
+}
+
+// ============== 页面模板系统 ==============
+
+// 配置页面通用模板
+function renderConfigPageTemplate(config) {
+  const {
+    title,
+    icon = '⚙️',
+    sections,
+    saveFunction,
+    saveButtonText = '💾 保存配置'
+  } = config;
+  
+  return renderHeader(false) +
+    '<div class="container" style="padding-top:24px;padding-bottom:40px;">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;">' +
+        `<h1>${icon} ${title}</h1>` +
+        '<button class="btn btn-secondary" onclick="navigate(\'admin\')">← 返回管理</button>' +
+      '</div>' +
+      sections.map(section => configSection(section.title, section.content)).join('') +
+      `<button class="btn btn-primary btn-lg" onclick="${saveFunction}">${saveButtonText}</button>` +
+    '</div>';
+}
+
+// ============== 认证中间件 ==============
+
+// 需要认证的页面列表
+const AUTH_REQUIRED_PAGES = ['admin', 'config', 'footer', 'preview-config'];
+
+// 检查页面是否需要认证
+function requiresAuth(page) {
+  return AUTH_REQUIRED_PAGES.includes(page);
+}
+
+// 统一的认证导航函数
+async function navigateWithAuth(page) {
+  if (requiresAuth(page)) {
+    const data = await checkAuth();
+    state.isAdmin = data.authenticated;
+    state.page = page;
+    render();
+  } else {
+    state.page = page;
+    render();
+  }
+}
+
+// ============== API 工具函数 ==============
+
+// 统一的认证检查包装器
+async function withAuth(page, checkAuthFn, renderFn) {
+  const data = await checkAuthFn();
+  return data.authenticated ? renderFn() : renderLoginPage();
+}
+
+// 统一的 API 错误处理
+function handleApiError(error, defaultMessage = '操作失败') {
+  console.error('API Error:', error);
+  return {
+    success: false,
+    error: error.message || defaultMessage
+  };
+}
+
 function removeTagsFromContent(text) {
   return text.replace(/#[\w\u4e00-\u9fa5]+/g, '').trim();
 }
@@ -974,32 +1283,25 @@ async function handleEditedMessage(env, message, botConfig) {
     return { ok: true };
   }
   
-  // 提取新内容并转换为标准 Markdown
-  let rawText = message.text || message.caption || '';
-  const entities = message.entities || message.caption_entities || [];
+  // 使用通用函数提取内容和标签
+  const parsed = parseMessageContent(message);
   
-  let content = rawText;
-  if (entities.length > 0) {
-    content = restoreEntities(rawText, entities, 'std');
-  }
-  
-  if (!content.trim()) {
+  if (!parsed.content.trim()) {
     return { ok: true };
   }
   
-  // 解析标签（提取但不删除原文中的标签，使用原始文本和 entities）
-  const tags = parseTags(rawText, entities);
-  const finalTags = tags.length > 0 ? tags : existingItem.tags;
+  // 解析标签（提取但不删除原文中的标签）
+  const finalTags = parsed.tags.length > 0 ? parsed.tags : existingItem.tags;
   
   // 更新收藏（保留原文中的标签）
-  const updatedItem = await updateItemByTelegramMsg(env, chatId, messageId, finalTags, content);
+  const updatedItem = await updateItemByTelegramMsg(env, chatId, messageId, finalTags, parsed.content);
   
   if (updatedItem) {
     const tagsText = finalTags.map(t => `#${t}`).join(' ');
-    const previewContent = content.substring(0, 60).replace(/\n/g, ' ');
+    const previewContent = parsed.content.substring(0, 60).replace(/\n/g, ' ');
     
     await sendMessage(botConfig.bot_token, chatId,
-      `🔄 <b>收藏已自动更新！</b>\n\n🏷️ ${tagsText}\n📝 ${escapeHtml(previewContent)}${content.length > 60 ? '...' : ''}\n\n<i>💡 编辑原消息会自动同步更新</i>`,
+      `🔄 <b>收藏已自动更新！</b>\n\n🏷️ ${tagsText}\n📝 ${escapeHtml(previewContent)}${parsed.content.length > 60 ? '...' : ''}\n\n<i>💡 编辑原消息会自动同步更新</i>`,
       {
         reply_to_message_id: messageId,
         reply_markup: {
@@ -1035,25 +1337,18 @@ async function handleEditedChannelMessage(env, message, botConfig) {
     return { ok: true };
   }
   
-  // 提取新内容并转换为标准 Markdown
-  let rawText = message.text || message.caption || '';
-  const entities = message.entities || message.caption_entities || [];
+  // 使用通用函数提取内容和标签
+  const parsed = parseMessageContent(message);
   
-  let content = rawText;
-  if (entities.length > 0) {
-    content = restoreEntities(rawText, entities, 'std');
-  }
-  
-  if (!content.trim()) {
+  if (!parsed.content.trim()) {
     return { ok: true };
   }
   
-  // 解析标签（提取但不删除原文中的标签，使用原始文本和 entities）
-  const tags = parseTags(rawText, entities);
-  const finalTags = tags.length > 0 ? tags : existingItem.tags;
+  // 解析标签
+  const finalTags = parsed.tags.length > 0 ? parsed.tags : existingItem.tags;
   
-  // 更新收藏（保留原文中的标签）
-  await updateItemByTelegramMsg(env, chatId, messageId, finalTags, content);
+  // 更新收藏
+  await updateItemByTelegramMsg(env, chatId, messageId, finalTags, parsed.content);
   
   console.log('Channel post updated silently:', messageId);
   
@@ -1085,55 +1380,29 @@ async function handleChannelMessage(env, message, botConfig) {
     mediaInfo = await processMediaFile(message, botConfig.bot_token, chatId);
   }
   
-  // 提取内容并转换为标准 Markdown
-  let rawText = message.text || message.caption || '';
-  const entities = message.entities || message.caption_entities || [];
-  
-  let content = rawText;
-  if (entities.length > 0) {
-    content = restoreEntities(rawText, entities, 'std');
-  }
+  // 使用通用函数提取内容和标签
+  const parsed = parseMessageContent(message);
   
   // 允许纯媒体消息（无文字）
-  if (!content.trim() && !mediaInfo) {
+  if (!parsed.content.trim() && !mediaInfo) {
     return { ok: true };
   }
   
-  // 解析标签（提取但不删除原文中的标签，使用原始文本和 entities）
-  const tags = parseTags(rawText, entities);
-  
   // 默认标签 + 频道标签
-  const finalTags = tags.length > 0 ? tags : ['channel'];
+  const finalTags = parsed.tags.length > 0 ? parsed.tags : ['channel'];
   
-  // 添加频道名作为标签
-  if (chatTitle) {
-    const channelTag = chatTitle.toLowerCase()
-      .replace(/[^a-z0-9\u4e00-\u9fa5]/g, '_')
-      .replace(/_+/g, '_')
-      .replace(/^_|_$/g, '');
-    if (channelTag) {
-      finalTags.push(`channel_${channelTag}`);
-    }
+  // 使用工具函数添加频道标签
+  const channelTag = generateChannelTag(chatTitle);
+  if (channelTag) {
+    finalTags.push(channelTag);
   }
   
-  // 保存 Telegram 消息信息
-  const telegramMsgInfo = {
-    chat_id: chatId,
-    message_id: message.message_id,
-    chat_type: 'channel',
-    channel_title: chatTitle
-  };
+  // 使用工具函数创建消息信息和来源信息
+  const telegramMsgInfo = createTelegramMsgInfo(message, 'channel', chatTitle);
+  const sourceInfo = createChannelSourceInfo(message, chatTitle);
   
-  // 保存来源信息
-  const sourceInfo = {
-    channel_id: chatId.toString(),
-    channel_title: chatTitle,
-    channel_username: message.chat.username || null,
-    type: 'channel'
-  };
-  
-  // 添加收藏项（保留原文中的标签）
-  const item = await addItem(env, finalTags, content, 'telegram_channel', sourceInfo, telegramMsgInfo, mediaInfo);
+  // 添加收藏项
+  const item = await addItem(env, finalTags, parsed.content, 'telegram_channel', sourceInfo, telegramMsgInfo, mediaInfo);
   
   console.log('Channel post saved:', item.id);
   
@@ -1227,87 +1496,49 @@ async function processMediaGroup(env, messages, botConfig, chatType) {
     }
   }
   
-  // 提取第一条消息的文字内容
-  let rawText = messages[0].text || messages[0].caption || '';
-  const entities = messages[0].entities || messages[0].caption_entities || [];
+  // 使用通用函数提取第一条消息的文字内容和标签
+  const parsed = parseMessageContent(messages[0]);
+  const finalTags = parsed.tags.length > 0 ? parsed.tags : (chatType === 'channel' ? ['channel'] : ['media']);
   
-  let content = rawText;
-  if (entities.length > 0) {
-    content = restoreEntities(rawText, entities, 'std');
-  }
-  
-  // 解析标签（使用原始文本和 entities）
-  const tags = parseTags(rawText, entities);
-  const finalTags = tags.length > 0 ? tags : (chatType === 'channel' ? ['channel'] : ['media']);
-  
-  // 频道消息添加频道标签
-  if (chatType === 'channel' && chatTitle) {
-    const channelTag = chatTitle.toLowerCase()
-      .replace(/[^a-z0-9\u4e00-\u9fa5]/g, '_')
-      .replace(/_+/g, '_')
-      .replace(/^_|_$/g, '');
+  // 使用工具函数添加频道标签
+  if (chatType === 'channel') {
+    const channelTag = generateChannelTag(chatTitle);
     if (channelTag) {
-      finalTags.push(`channel_${channelTag}`);
+      finalTags.push(channelTag);
     }
   }
   
-  // 保存 Telegram 消息信息
-  const telegramMsgInfo = {
-    chat_id: chatId,
-    message_id: firstMessage.message_id,
-    chat_type: chatType,
-    channel_title: chatType === 'channel' ? chatTitle : null,
-    media_group_id: firstMessage.media_group_id
-  };
+  // 使用工具函数创建消息信息
+  const telegramMsgInfo = createTelegramMsgInfo(
+    firstMessage,
+    chatType,
+    chatType === 'channel' ? chatTitle : null,
+    firstMessage.media_group_id
+  );
   
-  // 保存来源信息
+  // 使用工具函数提取来源信息
   let sourceInfo;
   if (chatType === 'channel') {
-    sourceInfo = {
-      channel_id: chatId.toString(),
-      channel_title: chatTitle,
-      channel_username: firstMessage.chat.username || null,
-      type: 'channel'
-    };
+    sourceInfo = createChannelSourceInfo(firstMessage, chatTitle);
   } else {
-    // 私聊消息 - 检查是否是转发
-    if (firstMessage.forward_from) {
-      sourceInfo = {
-        username: firstMessage.forward_from.username || null,
-        first_name: firstMessage.forward_from.first_name || 'Unknown',
-        user_id: firstMessage.forward_from.id.toString()
-      };
-    } else if (firstMessage.forward_from_chat) {
-      sourceInfo = {
-        username: firstMessage.forward_from_chat.username || null,
-        first_name: firstMessage.forward_from_chat.title || 'Unknown',
-        user_id: firstMessage.forward_from_chat.id.toString()
-      };
-    } else if (firstMessage.forward_sender_name) {
-      sourceInfo = {
-        username: null,
-        first_name: firstMessage.forward_sender_name,
-        user_id: 'hidden'
-      };
-    } else {
-      sourceInfo = {
-        user_id: firstMessage.from.id.toString(),
-        first_name: firstMessage.from.first_name,
-        username: firstMessage.from.username || null,
-        type: 'user'
-      };
-    }
+    sourceInfo = extractSourceInfo(firstMessage);
   }
+  
+  // 判断消息类型
+  const isForwarded = firstMessage.forward_from || firstMessage.forward_from_chat || firstMessage.forward_sender_name;
+  const messageType = chatType === 'channel' 
+    ? 'telegram_channel' 
+    : (isForwarded ? 'telegram_forward' : 'telegram');
   
   // 保存收藏项（媒体为数组）
   const item = await addItem(
     env,
     finalTags,
-    content,
-    chatType === 'channel' ? 'telegram_channel' : (firstMessage.forward_from || firstMessage.forward_from_chat ? 'telegram_forward' : 'telegram'),
+    parsed.content,
+    messageType,
     sourceInfo,
     telegramMsgInfo,
-    mediaArray  // 传入媒体数组
+    mediaArray
   );
   
   console.log('Media group saved:', item.id, 'media count:', mediaArray.length);
@@ -1316,9 +1547,10 @@ async function processMediaGroup(env, messages, botConfig, chatType) {
   if (chatType === 'user') {
     const tagsText = finalTags.map(t => `#${t}`).join(' ');
     let sourceText = '';
-    if (firstMessage.forward_from || firstMessage.forward_from_chat || firstMessage.forward_sender_name) {
-      if (sourceInfo.username) sourceText = `\n📥 转发自: @${sourceInfo.username}`;
-      else if (sourceInfo.first_name) sourceText = `\n📥 转发自: ${sourceInfo.first_name}`;
+    if (isForwarded && sourceInfo) {
+      sourceText = sourceInfo.username
+        ? `\n📥 转发自: @${sourceInfo.username}`
+        : `\n📥 转发自: ${sourceInfo.first_name}`;
     }
     
     const mediaCountText = `${mediaArray.length} 个媒体文件`;
@@ -1825,114 +2057,78 @@ async function handleAddContent(env, chatId, message, botConfig) {
     return await handleMediaGroupMessage(env, message, botConfig, 'user');
   }
   
-  let rawText = message.text || message.caption || '';
-  let content = rawText;
-  let sourceInfo = null;
+  // 使用工具函数提取来源信息
+  const sourceInfo = extractSourceInfo(message);
+  
+  // 处理媒体文件
   let mediaInfo = null;
-  
-  if (message.forward_from) {
-    sourceInfo = {
-      username: message.forward_from.username || null,
-      first_name: message.forward_from.first_name || 'Unknown',
-      user_id: message.forward_from.id.toString()
-    };
-  } else if (message.forward_from_chat) {
-    sourceInfo = {
-      username: message.forward_from_chat.username || null,
-      first_name: message.forward_from_chat.title || 'Unknown',
-      user_id: message.forward_from_chat.id.toString()
-    };
-  } else if (message.forward_sender_name) {
-    sourceInfo = {
-      username: null,
-      first_name: message.forward_sender_name,
-      user_id: 'hidden'
-    };
-  }
-  
-  // 处理媒体文件（图片、音频、文档、视频、贴纸等）
   if (message.photo || message.audio || message.voice || message.document || message.video || message.sticker) {
     mediaInfo = await processMediaFile(message, botConfig.bot_token, chatId);
   }
   
-  // 使用 restoreEntities 转换 Telegram entities 为标准 Markdown
-  const entities = message.entities || message.caption_entities || [];
-  if (entities.length > 0) {
-    content = restoreEntities(rawText, entities, 'std');
-  }
+  // 使用通用函数提取内容和标签
+  const parsed = parseMessageContent(message);
   
   // 允许纯媒体消息（无文字）
-  if (!content.trim() && !mediaInfo) {
+  if (!parsed.content.trim() && !mediaInfo) {
     return sendMessage(botConfig.bot_token, chatId, '❌ 内容不能为空');
   }
   
-  const tags = parseTags(rawText, entities);
-  const finalTags = tags.length > 0 ? tags : ['inbox'];
+  const finalTags = parsed.tags.length > 0 ? parsed.tags : ['inbox'];
   
-  // 保存 Telegram 消息信息
-  const telegramMsgInfo = {
-    chat_id: chatId,
-    message_id: message.message_id,
-    chat_type: 'private'
-  };
+  // 使用工具函数创建 Telegram 消息信息
+  const telegramMsgInfo = createTelegramMsgInfo(message, 'private');
   
-  const item = await addItem(env, finalTags, content, sourceInfo ? 'telegram_forward' : 'telegram', sourceInfo, telegramMsgInfo, mediaInfo);
+  // 判断是否为转发消息
+  const isForwarded = message.forward_from || message.forward_from_chat || message.forward_sender_name;
+  
+  const item = await addItem(
+    env,
+    finalTags,
+    parsed.content,
+    isForwarded ? 'telegram_forward' : 'telegram',
+    sourceInfo,
+    telegramMsgInfo,
+    mediaInfo
+  );
   
   const tagsText = finalTags.map(t => `#${t}`).join(' ');
   let sourceText = '';
-  if (sourceInfo) {
-    if (sourceInfo.username) sourceText = `\n📥 转发自: @${sourceInfo.username}`;
-    else if (sourceInfo.first_name) sourceText = `\n📥 转发自: ${sourceInfo.first_name}`;
+  if (isForwarded && sourceInfo) {
+    sourceText = sourceInfo.username
+      ? `\n📥 转发自: @${sourceInfo.username}`
+      : `\n📥 转发自: ${sourceInfo.first_name}`;
   }
   
-  const previewContent = content.substring(0, 80).replace(/\n/g, ' ').replace(/```[\s\S]*?```/g, '[代码块]');
+  const previewContent = parsed.content.substring(0, 80).replace(/\n/g, ' ').replace(/```[\s\S]*?```/g, '[代码块]');
   
   return sendMessage(botConfig.bot_token, chatId,
-    `✅ <b>已添加！</b>\n\n🏷️ ${tagsText}${sourceText}\n📝 ${escapeHtml(previewContent)}${content.length > 80 ? '...' : ''}\n\n<i>💡 提示：编辑原消息可自动同步更新</i>`,
+    `✅ <b>已添加！</b>\n\n🏷️ ${tagsText}${sourceText}\n📝 ${escapeHtml(previewContent)}${parsed.content.length > 80 ? '...' : ''}\n\n<i>💡 提示：编辑原消息可自动同步更新</i>`,
     {
       reply_to_message_id: message.message_id,
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: '📄 查看', callback_data: `view_${item.id}` },
-            { text: '✏️ 编辑', callback_data: `edit_${item.id}` }
-          ],
-          [
-            { text: '➕ 继续添加', callback_data: 'act_add' },
-            { text: '🏠 主菜单', callback_data: 'act_menu' }
-          ]
-        ]
-      }
+      reply_markup: { inline_keyboard: TelegramButtons.viewEdit(item.id) }
     }
   );
 }
 
 async function handleEditContent(env, chatId, message, itemId, botConfig) {
-  const rawText = message.text || '';
-  const entities = message.entities || [];
+  // 使用通用函数提取内容和标签
+  const parsed = parseMessageContent(message);
   
-  let content = rawText;
-  if (entities.length > 0) {
-    content = restoreEntities(rawText, entities, 'std');
-  }
-  
-  if (!content.trim()) {
+  if (!parsed.content.trim()) {
     return sendMessage(botConfig.bot_token, chatId, '❌ 内容不能为空');
   }
   
-  const tags = parseTags(rawText, entities);
-  const finalTags = tags.length > 0 ? tags : ['inbox'];
+  const finalTags = parsed.tags.length > 0 ? parsed.tags : ['inbox'];
   
-  const item = await editItem(env, itemId, finalTags, content);
+  const item = await editItem(env, itemId, finalTags, parsed.content);
   
   if (item) {
     return sendMessage(botConfig.bot_token, chatId, '✅ <b>已更新！</b>', {
-      reply_markup: {
-        inline_keyboard: [[
-          { text: '📄 查看', callback_data: `view_${itemId}` },
-          { text: '🏠 主菜单', callback_data: 'act_menu' }
-        ]]
-      }
+      reply_markup: { inline_keyboard: [[
+        createButton('📄 查看', `view_${itemId}`),
+        createButton('🏠 主菜单', 'act_menu')
+      ]] }
     });
   } else {
     return sendMessage(botConfig.bot_token, chatId, '❌ 更新失败，项目可能已被删除');
@@ -2053,6 +2249,7 @@ async function handleApiData(request, env, url) {
   const tag = url.searchParams.get('tag');
   const source = url.searchParams.get('source');
   const q = url.searchParams.get('q');
+  const id = url.searchParams.get('id');
   
   const metadata = await getMetadata(env);
   const siteConfig = await getSiteConfig(env);
@@ -2060,6 +2257,11 @@ async function handleApiData(request, env, url) {
   const botConfig = await getBotConfig(env);
   
   let filteredItems = [...collections].reverse();
+  
+  // 如果指定了 id，只返回该项目
+  if (id) {
+    filteredItems = filteredItems.filter(item => item.id === id);
+  }
   
   if (tag) {
     const tagIds = await getTagIds(env, tag);
@@ -2077,10 +2279,35 @@ async function handleApiData(request, env, url) {
   
   if (q) {
     const keyword = q.toLowerCase();
-    filteredItems = filteredItems.filter(item => 
-      item.content.toLowerCase().includes(keyword) ||
-      item.tags.some(t => t.includes(keyword))
-    );
+    filteredItems = filteredItems.filter(item => {
+      // 搜索内容
+      if (item.content && item.content.toLowerCase().includes(keyword)) {
+        return true;
+      }
+      
+      // 搜索标签
+      if (item.tags && item.tags.some(t => t.toLowerCase().includes(keyword))) {
+        return true;
+      }
+      
+      // 搜索链接预览的标题和描述
+      if (item.link_previews && item.link_previews.length > 0) {
+        return item.link_previews.some(preview => {
+          if (preview.title && preview.title.toLowerCase().includes(keyword)) {
+            return true;
+          }
+          if (preview.description && preview.description.toLowerCase().includes(keyword)) {
+            return true;
+          }
+          if (preview.site_name && preview.site_name.toLowerCase().includes(keyword)) {
+            return true;
+          }
+          return false;
+        });
+      }
+      
+      return false;
+    });
   }
   
   return jsonResponse({
@@ -2162,6 +2389,62 @@ async function handleApiDelete(request, env, id) {
     } else {
       return errorResponse('Item not found', 404);
     }
+  } catch (e) {
+    return errorResponse(e.message, 500);
+  }
+}
+
+// 置顶/取消置顶收藏
+async function handleApiPin(request, env, id) {
+  if (!verifyToken(request, env)) {
+    return errorResponse('Unauthorized', 401);
+  }
+  
+  if (!id || id === 'null' || id === 'undefined') {
+    return errorResponse('Invalid ID');
+  }
+  
+  try {
+    const { pinned } = await request.json();
+    const collections = await getCollections(env);
+    const index = collections.findIndex(item => item.id === id);
+    
+    if (index === -1) {
+      return errorResponse('Item not found', 404);
+    }
+    
+    collections[index].pinned = pinned === true;
+    await saveCollections(env, collections);
+    
+    return successResponse({ pinned: collections[index].pinned });
+  } catch (e) {
+    return errorResponse(e.message, 500);
+  }
+}
+
+// 隐藏/取消隐藏收藏
+async function handleApiHide(request, env, id) {
+  if (!verifyToken(request, env)) {
+    return errorResponse('Unauthorized', 401);
+  }
+  
+  if (!id || id === 'null' || id === 'undefined') {
+    return errorResponse('Invalid ID');
+  }
+  
+  try {
+    const { hidden } = await request.json();
+    const collections = await getCollections(env);
+    const index = collections.findIndex(item => item.id === id);
+    
+    if (index === -1) {
+      return errorResponse('Item not found', 404);
+    }
+    
+    collections[index].hidden = hidden === true;
+    await saveCollections(env, collections);
+    
+    return successResponse({ hidden: collections[index].hidden });
   } catch (e) {
     return errorResponse(e.message, 500);
   }
@@ -2350,6 +2633,259 @@ async function handleCheckAuth(request, env) {
   return jsonResponse({ authenticated: isAuth });
 }
 
+// ============== RSS Feed 生成 ==============
+
+// ============== RSS/Atom 辅助函数 ==============
+
+// 从 Markdown 内容中提取标题
+function extractTitle(content) {
+  if (!content) return '无标题';
+  
+  // 1. 尝试提取 Markdown 一级标题
+  const h1Match = content.match(/^#\s+(.+)$/m);
+  if (h1Match) {
+    return h1Match[1].trim();
+  }
+  
+  // 2. 尝试提取 Markdown 二级标题
+  const h2Match = content.match(/^##\s+(.+)$/m);
+  if (h2Match) {
+    return h2Match[1].trim();
+  }
+  
+  // 3. 尝试提取第一行非空文本（去除 Markdown 符号）
+  const lines = content.split('\n').filter(line => line.trim());
+  if (lines.length > 0) {
+    let firstLine = lines[0]
+      .replace(/^[#>\-*+`\s]+/, '') // 移除标题、引用、列表、代码符号
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // 移除链接保留文本
+      .replace(/[*_~`]/g, '') // 移除格式化符号
+      .trim();
+    
+    if (firstLine.length > 0) {
+      // 截取前60个字符作为标题
+      return firstLine.substring(0, 60) + (firstLine.length > 60 ? '...' : '');
+    }
+  }
+  
+  // 4. 提取 URL（如果内容主要是链接）
+  const urlMatch = content.match(/https?:\/\/([^\/\s]+)/);
+  if (urlMatch) {
+    return urlMatch[1]; // 返回域名作为标题
+  }
+  
+  return '无标题';
+}
+
+// ============== RSS Feed 生成 ==============
+
+async function generateRSSFeed(env, request) {
+  const siteConfig = await getSiteConfig(env);
+  const url = new URL(request.url);
+  const baseUrl = `${url.protocol}//${url.host}`;
+  
+  const collections = await getCollections(env);
+  // 按时间倒序，只取最新的 50 条
+  const items = [...collections]
+    .reverse()
+    .slice(0, 50);
+  
+  const rssItems = items.map(item => {
+    const pubDate = new Date(item.timestamp).toUTCString();
+    // 使用项目 ID 创建唯一链接
+    const link = `${baseUrl}/?id=${item.id}`;
+    
+    // 智能提取标题
+    const title = escapeXml(extractTitle(item.content));
+    
+    // 保留原始内容（不转换，让 RSS 阅读器自己处理）
+    // 使用 <![CDATA[]]> 包裹以保留换行等格式
+    const description = `<![CDATA[${item.content}]]>`;
+    
+    return `
+    <item>
+      <title>${title}</title>
+      <link>${link}</link>
+      <description>${description}</description>
+      <pubDate>${pubDate}</pubDate>
+      <guid isPermaLink="false">${item.id}</guid>
+      ${item.tags.map(tag => `<category>${escapeXml(tag)}</category>`).join('\n      ')}
+    </item>`;
+  }).join('\n');
+  
+  const rss = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>${escapeXml(siteConfig.title)}</title>
+    <link>${baseUrl}</link>
+    <description>${escapeXml(siteConfig.description)}</description>
+    <language>zh-CN</language>
+    <lastBuildDate>${new Date().toUTCString()}</lastBuildDate>
+    <atom:link href="${baseUrl}/rss.xml" rel="self" type="application/rss+xml" />
+    ${rssItems}
+  </channel>
+</rss>`;
+  
+  return new Response(rss, {
+    headers: {
+      'Content-Type': 'application/rss+xml; charset=utf-8',
+      'Cache-Control': 'public, max-age=3600'
+    }
+  });
+}
+
+// ============== Atom Feed 生成 ==============
+
+async function generateAtomFeed(env, request) {
+  const siteConfig = await getSiteConfig(env);
+  const url = new URL(request.url);
+  const baseUrl = `${url.protocol}//${url.host}`;
+  
+  const collections = await getCollections(env);
+  const items = [...collections]
+    .reverse()
+    .slice(0, 50);
+  
+  const atomEntries = items.map(item => {
+    const updated = new Date(item.timestamp).toISOString();
+    // 使用项目 ID 创建唯一链接
+    const link = `${baseUrl}/?id=${item.id}`;
+    
+    // 智能提取标题
+    const title = escapeXml(extractTitle(item.content));
+    
+    // 保留原始内容（使用 text 类型）
+    // 提取前 200 字符作为摘要
+    const summary = escapeXml(item.content.substring(0, 200).replace(/\n/g, ' '));
+    
+    return `
+  <entry>
+    <title>${title}</title>
+    <link href="${link}"/>
+    <id>urn:uuid:${item.id}</id>
+    <updated>${updated}</updated>
+    <content type="text"><![CDATA[${item.content}]]></content>
+    <summary type="text">${summary}</summary>
+    ${item.tags.map(tag => `<category term="${escapeXml(tag)}"/>`).join('\n    ')}
+  </entry>`;
+  }).join('\n');
+  
+  const atom = `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>${escapeXml(siteConfig.title)}</title>
+  <link href="${baseUrl}"/>
+  <link href="${baseUrl}/atom.xml" rel="self"/>
+  <id>${baseUrl}/</id>
+  <updated>${new Date().toISOString()}</updated>
+  <subtitle>${escapeXml(siteConfig.description)}</subtitle>
+  ${atomEntries}
+</feed>`;
+  
+  return new Response(atom, {
+    headers: {
+      'Content-Type': 'application/atom+xml; charset=utf-8',
+      'Cache-Control': 'public, max-age=3600'
+    }
+  });
+}
+
+// ============== Sitemap 生成 ==============
+
+async function generateSitemap(env, request) {
+  const url = new URL(request.url);
+  const baseUrl = `${url.protocol}//${url.host}`;
+  
+  const metadata = await getMetadata(env);
+  const collections = await getCollections(env);
+  const tags = metadata.tag_list || [];
+  
+  // 基础页面
+  const pages = [
+    { loc: baseUrl, priority: '1.0', changefreq: 'daily' },
+    { loc: `${baseUrl}/tags`, priority: '0.8', changefreq: 'weekly' }
+  ];
+  
+  // 标签页面
+  tags.forEach(tag => {
+    pages.push({
+      loc: `${baseUrl}/?tag=${encodeURIComponent(tag)}`,
+      priority: '0.6',
+      changefreq: 'daily'
+    });
+  });
+  
+  // 所有收藏项页面（最新100个）
+  const recentItems = [...collections].reverse().slice(0, 100);
+  recentItems.forEach(item => {
+    pages.push({
+      loc: `${baseUrl}/?id=${item.id}`,
+      priority: '0.5',
+      changefreq: 'weekly',
+      lastmod: new Date(item.timestamp).toISOString().split('T')[0]
+    });
+  });
+  
+  const urlElements = pages.map(page => `
+  <url>
+    <loc>${escapeXml(page.loc)}</loc>
+    <lastmod>${page.lastmod || new Date().toISOString().split('T')[0]}</lastmod>
+    <changefreq>${page.changefreq}</changefreq>
+    <priority>${page.priority}</priority>
+  </url>`).join('');
+  
+  const sitemap = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${urlElements}
+</urlset>`;
+  
+  return new Response(sitemap, {
+    headers: {
+      'Content-Type': 'application/xml; charset=utf-8',
+      'Cache-Control': 'public, max-age=86400'
+    }
+  });
+}
+
+// ============== Robots.txt 生成 ==============
+
+async function generateRobotsTxt(request) {
+  const url = new URL(request.url);
+  const baseUrl = `${url.protocol}//${url.host}`;
+  
+  const robotsTxt = `# NavCollect Robots.txt
+User-agent: *
+Allow: /
+Allow: /tags
+Disallow: /admin
+Disallow: /config
+Disallow: /api/
+
+# Sitemaps
+Sitemap: ${baseUrl}/sitemap.xml
+
+# Crawl-delay
+Crawl-delay: 10
+`;
+  
+  return new Response(robotsTxt, {
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'public, max-age=86400'
+    }
+  });
+}
+
+// XML 转义辅助函数
+function escapeXml(unsafe) {
+  if (!unsafe) return '';
+  return String(unsafe)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
 // ============== SPA HTML 生成 ==============
 
 function renderLogoHtml(siteConfig) {
@@ -2456,8 +2992,63 @@ self.addEventListener('activate', event => {
 }
 
 async function renderSPA(env) {
-  // 只获取基础配置（用于页面元信息和 Logo）
+  // 获取基础配置和当前请求信息
   const siteConfig = await getSiteConfig(env);
+  const request = env.request || {};
+  const url = new URL(request.url || 'https://example.com');
+  const canonicalUrl = `${url.origin}${url.pathname}${url.search}`;
+  
+  // 解析 URL 参数以生成动态 SEO
+  const params = url.searchParams;
+  const tag = params.get('tag');
+  const source = params.get('source');
+  const q = params.get('q');
+  const id = params.get('id');
+  const path = url.pathname;
+  
+  // 动态生成 title 和 description
+  let pageTitle = siteConfig.title;
+  let pageDescription = siteConfig.description;
+  let pageType = 'website';
+  
+  // 根据不同页面类型设置 SEO
+  if (id) {
+    // 单个收藏页面
+    try {
+      const collections = await getCollections(env);
+      const item = collections.find(c => c.id === id);
+      if (item) {
+        // 提取标题（使用和 RSS 相同的逻辑）
+        const itemTitle = extractTitle(item.content);
+        pageTitle = `${itemTitle} - ${siteConfig.title}`;
+        
+        // 提取描述（纯文本，前 160 字符）
+        const plainText = item.content.replace(/[#*`\[\]]/g, '').trim();
+        pageDescription = plainText.substring(0, 160) + (plainText.length > 160 ? '...' : '');
+        pageType = 'article';
+      }
+    } catch (e) {
+      console.error('Failed to fetch item for SEO:', e);
+    }
+  } else if (tag) {
+    pageTitle = `#${tag} - ${siteConfig.title}`;
+    pageDescription = `浏览标签"${tag}"下的所有收藏内容`;
+  } else if (source) {
+    pageTitle = `来自 @${source} 的收藏 - ${siteConfig.title}`;
+    pageDescription = `浏览来自 @${source} 的所有收藏内容`;
+  } else if (q) {
+    pageTitle = `搜索"${q}" - ${siteConfig.title}`;
+    pageDescription = `搜索关键词"${q}"的相关收藏内容`;
+  } else if (path === '/tags' || path === '/tags/') {
+    pageTitle = `标签云 - ${siteConfig.title}`;
+    pageDescription = `浏览所有标签分类，发现感兴趣的内容`;
+  } else if (path === '/admin' || path === '/admin/') {
+    pageTitle = `管理后台 - ${siteConfig.title}`;
+    pageDescription = `管理收藏内容、配置网站设置`;
+  } else {
+    // 首页
+    pageTitle = `${siteConfig.title} - ${siteConfig.description}`;
+  }
 
   const logoHtml = renderLogoHtml(siteConfig);
   const faviconHref = getFaviconHref(siteConfig);
@@ -2467,13 +3058,37 @@ async function renderSPA(env) {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${escapeHtml(siteConfig.title)} - ${escapeHtml(siteConfig.description)}</title>
-  <meta name="description" content="${escapeHtml(siteConfig.description)}">
-  <meta name="keywords" content="导航,收藏,书签,链接管理">
-  <meta property="og:title" content="${escapeHtml(siteConfig.title)}">
-  <meta property="og:description" content="${escapeHtml(siteConfig.description)}">
-  <meta property="og:type" content="website">
-  <meta name="twitter:card" content="summary">
+  <title>${escapeHtml(pageTitle)}</title>
+  
+  <!-- SEO Meta Tags -->
+  <meta name="description" content="${escapeHtml(pageDescription)}">
+  <meta name="keywords" content="导航,收藏,书签,链接管理,个人知识库,Telegram 收藏">
+  <meta name="author" content="${escapeHtml(siteConfig.title)}">
+  <meta name="robots" content="index, follow">
+  <meta name="googlebot" content="index, follow">
+  <link rel="canonical" href="${canonicalUrl}">
+  
+  <!-- Open Graph / Facebook -->
+  <meta property="og:type" content="${pageType}">
+  <meta property="og:url" content="${canonicalUrl}">
+  <meta property="og:title" content="${escapeHtml(pageTitle)}">
+  <meta property="og:description" content="${escapeHtml(pageDescription)}">
+  <meta property="og:site_name" content="${escapeHtml(siteConfig.title)}">
+  <meta property="og:locale" content="zh_CN">
+  
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:url" content="${canonicalUrl}">
+  <meta name="twitter:title" content="${escapeHtml(pageTitle)}">
+  <meta name="twitter:description" content="${escapeHtml(pageDescription)}">
+  
+  <!-- Geo Tags -->
+  <meta name="geo.region" content="CN">
+  <meta name="geo.placename" content="China">
+  
+  <!-- RSS Feed -->
+  <link rel="alternate" type="application/rss+xml" title="${escapeHtml(siteConfig.title)} RSS Feed" href="/rss.xml">
+  <link rel="alternate" type="application/atom+xml" title="${escapeHtml(siteConfig.title)} Atom Feed" href="/atom.xml">
   
   <!-- PWA Meta Tags -->
   <meta name="mobile-web-app-capable" content="yes">
@@ -2561,6 +3176,28 @@ async function renderSPA(env) {
     .logo-emoji { font-size: 28px; line-height: 1; }
     .logo span { white-space: nowrap; }
     .header-actions { display: flex; align-items: center; gap: 8px; }
+    
+    .rss-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 38px;
+      height: 38px;
+      border-radius: 10px;
+      background: var(--bg);
+      color: var(--text-secondary);
+      border: 1px solid var(--border);
+      font-size: 18px;
+      cursor: pointer;
+      transition: all 0.2s;
+      text-decoration: none;
+    }
+    .rss-btn:hover {
+      background: var(--primary);
+      color: white;
+      border-color: var(--primary);
+      transform: translateY(-2px);
+    }
     
     .btn {
       display: inline-flex;
@@ -2695,6 +3332,20 @@ async function renderSPA(env) {
       font-size: 16px;
       line-height: 1;
     }
+    .filter-clear-btn {
+      padding: 6px 16px;
+      background: var(--primary);
+      color: white;
+      border: none;
+      border-radius: 20px;
+      cursor: pointer;
+      font-size: 13px;
+      transition: all 0.2s;
+    }
+    .filter-clear-btn:hover {
+      background: var(--primary-dark);
+      transform: translateX(-2px);
+    }
     
     .items-grid { display: flex; flex-direction: column; gap: 16px; padding-bottom: 40px; }
     
@@ -2707,7 +3358,10 @@ async function renderSPA(env) {
       transition: all 0.3s;
       animation: fadeIn 0.3s ease;
     }
-    .item-card:hover { box-shadow: var(--shadow-lg); transform: translateY(-2px); }
+    .item-card:hover { 
+      box-shadow: var(--shadow-lg); 
+      transform: translateY(-2px);
+    }
     .item-card.removing { animation: fadeOut 0.3s ease forwards; }
     @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
     @keyframes fadeOut { from { opacity: 1; transform: translateY(0); } to { opacity: 0; transform: translateY(-10px); } }
@@ -2781,13 +3435,24 @@ async function renderSPA(env) {
       transform: translateY(-1px);
       box-shadow: 0 2px 4px rgba(99, 102, 241, 0.3);
     }
-    .item-actions { display: flex; gap: 4px; opacity: 0; transition: opacity 0.2s; }
-    .item-card:hover .item-actions { opacity: 1; }
     
-    /* 桌面端：默认显示操作按钮 */
-    @media (min-width: 769px) {
+    /* 操作按钮区域 */
+    .item-actions { 
+      display: flex; 
+      gap: 4px; 
+    }
+    
+    /* 移动端：始终显示（因为包含重要的复制链接功能） */
+    @media (max-width: 768px) {
       .item-actions { opacity: 1; }
     }
+    
+    /* 桌面端：悬停显示，或始终显示 */
+    @media (min-width: 769px) {
+      .item-actions { opacity: 0; transition: opacity 0.2s; }
+      .item-card:hover .item-actions { opacity: 1; }
+    }
+    
     .item-action {
       width: 32px;
       height: 32px;
@@ -2803,6 +3468,7 @@ async function renderSPA(env) {
       font-size: 14px;
     }
     .item-action:hover { background: var(--border); color: var(--text); }
+    .item-action:active { transform: scale(0.95); }
     .item-action.danger:hover { background: #fee2e2; color: var(--danger); }
     
     /* 内容中的内联标签样式 */
@@ -3288,6 +3954,39 @@ async function renderSPA(env) {
       color: var(--warning);
       border-radius: 10px;
       font-size: 11px;
+    }
+    .pinned-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      background: rgba(99,102,241,0.1);
+      color: var(--primary);
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 500;
+    }
+    .hidden-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      background: rgba(100,116,139,0.1);
+      color: var(--text-secondary);
+      border-radius: 10px;
+      font-size: 11px;
+    }
+    
+    /* 置顶卡片样式 */
+    .item-card.pinned {
+      border-color: var(--primary);
+      box-shadow: 0 2px 8px rgba(99,102,241,0.2);
+    }
+    
+    /* 隐藏项样式（管理员可见） */
+    .item-card.hidden-item {
+      opacity: 0.7;
+      border-style: dashed;
     }
     
     .empty-state { text-align: center; padding: 80px 20px; color: var(--text-secondary); }
@@ -4269,7 +4968,6 @@ async function renderSPA(env) {
       .nav-tabs { order: 3; width: 100%; justify-content: center; margin-top: 8px; }
       .nav-tab { padding: 6px 12px; font-size: 13px; }
       .stats-bar { justify-content: center; }
-      .item-actions { opacity: 1; }
       .admin-toolbar { justify-content: center; }
       .form-row { flex-direction: column; }
       .logo { font-size: 16px; }
@@ -4564,6 +5262,7 @@ async function renderSPA(env) {
       currentTag: '',
       currentSource: '',
       currentQ: '',
+      currentId: '',
       items: [],
       metadata: { total_count: 0, tag_list: [], last_updated: null },
       siteConfig: { title: 'NavCollect', description: '个人网站导航收藏系统', logo_emoji: '📚', footer_links: [] },
@@ -4607,6 +5306,53 @@ async function renderSPA(env) {
       var div = document.createElement('div');
       div.textContent = text;
       return div.innerHTML;
+    }
+    
+    // 复制收藏项链接
+    function copyItemLink(itemId) {
+      var url = window.location.origin + '/?id=' + itemId;
+      
+      // 尝试使用现代 Clipboard API
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url).then(function() {
+          showToast('✅ 链接已复制到剪贴板');
+        }).catch(function(err) {
+          // 降级到旧方法
+          fallbackCopyTextToClipboard(url);
+        });
+      } else {
+        // 降级到旧方法
+        fallbackCopyTextToClipboard(url);
+      }
+    }
+    
+    // 降级复制方法（兼容旧浏览器）
+    function fallbackCopyTextToClipboard(text) {
+      var textArea = document.createElement('textarea');
+      textArea.value = text;
+      
+      // 避免滚动到底部
+      textArea.style.top = '0';
+      textArea.style.left = '0';
+      textArea.style.position = 'fixed';
+      textArea.style.opacity = '0';
+      
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+      
+      try {
+        var successful = document.execCommand('copy');
+        if (successful) {
+          showToast('✅ 链接已复制到剪贴板');
+        } else {
+          showToast('❌ 复制失败，请手动复制');
+        }
+      } catch (err) {
+        showToast('❌ 复制失败，请手动复制');
+      }
+      
+      document.body.removeChild(textArea);
     }
     
     // ========== 自定义音频播放器控制 ==========
@@ -4781,15 +5527,32 @@ async function renderSPA(env) {
     }
     
     // ========== Navigation ==========
+    // ========== Navigation & Routing ==========
+    
+    // 需要认证的页面列表
+    function requiresAuth(page) {
+      var authPages = ['admin', 'config', 'footer', 'preview-config'];
+      return authPages.indexOf(page) !== -1;
+    }
+    
     function navigate(page, pushState) {
       state.page = page;
+      
+      // 切换页面时清除所有筛选条件
+      if (page !== 'home') {
+        state.currentTag = '';
+        state.currentSource = '';
+        state.currentQ = '';
+        state.currentId = '';
+      }
+      
       if (pushState !== false) {
         var url = page === 'home' ? '/' : '/' + page;
         history.pushState({ page: page }, '', url);
       }
       
-      // 如果导航到需要认证的页面，先检查登录状态
-      if (page === 'admin' || page === 'config' || page === 'footer' || page === 'preview-config') {
+      // 使用认证中间件
+      if (requiresAuth(page)) {
         checkAuth().then(function(data) {
           state.isAdmin = data.authenticated;
           render();
@@ -4805,36 +5568,40 @@ async function renderSPA(env) {
       state.currentTag = tag;
       state.currentSource = '';
       state.currentQ = '';
+      state.currentId = '';
       state.currentPage = 1;
       history.pushState({}, '', tag ? '/?tag=' + encodeURIComponent(tag) : '/');
-      render();
+      loadData().then(function() { render(); });
     }
     
     function filterBySource(source) {
       state.currentSource = source;
       state.currentTag = '';
       state.currentQ = '';
+      state.currentId = '';
       state.currentPage = 1;
       history.pushState({}, '', '/?source=' + encodeURIComponent(source));
-      render();
+      loadData().then(function() { render(); });
     }
     
     function searchItems(q) {
       state.currentQ = q;
       state.currentTag = '';
       state.currentSource = '';
+      state.currentId = '';
       state.currentPage = 1;
       history.pushState({}, '', q ? '/?q=' + encodeURIComponent(q) : '/');
-      render();
+      loadData().then(function() { render(); });
     }
     
     function clearFilters() {
       state.currentTag = '';
       state.currentSource = '';
       state.currentQ = '';
+      state.currentId = '';
       state.currentPage = 1;
       history.pushState({}, '', '/');
-      render();
+      loadData().then(function() { render(); });
     }
     
     // ========== 分页和排序控制 ==========
@@ -5281,6 +6048,7 @@ async function renderSPA(env) {
       if (state.currentTag) params.set('tag', state.currentTag);
       if (state.currentSource) params.set('source', state.currentSource);
       if (state.currentQ) params.set('q', state.currentQ);
+      if (state.currentId) params.set('id', state.currentId);
       
       return fetch('/api/data?' + params.toString())
         .then(function(res) { return res.json(); })
@@ -5312,6 +6080,16 @@ async function renderSPA(env) {
     function getFilteredItems() {
       var items = state.items;
       
+      // 如果指定了 id，后端已经返回了单个项目，直接使用
+      if (state.currentId) {
+        return items; // 不进行任何额外筛选
+      }
+      
+      // 过滤隐藏项（非管理员无法看到）
+      if (!state.isAdmin) {
+        items = items.filter(function(item) { return !item.hidden; });
+      }
+      
       // 基本筛选
       if (state.currentTag) {
         items = items.filter(function(item) { return item.tags.indexOf(state.currentTag) !== -1; });
@@ -5327,7 +6105,33 @@ async function renderSPA(env) {
       if (state.currentQ) {
         var q = state.currentQ.toLowerCase();
         items = items.filter(function(item) {
-          return item.content.toLowerCase().indexOf(q) !== -1 || item.tags.some(function(t) { return t.indexOf(q) !== -1; });
+          // 搜索内容
+          if (item.content && item.content.toLowerCase().indexOf(q) !== -1) {
+            return true;
+          }
+          
+          // 搜索标签
+          if (item.tags && item.tags.some(function(t) { return t.toLowerCase().indexOf(q) !== -1; })) {
+            return true;
+          }
+          
+          // 搜索链接预览的标题和描述
+          if (item.link_previews && item.link_previews.length > 0) {
+            return item.link_previews.some(function(preview) {
+              if (preview.title && preview.title.toLowerCase().indexOf(q) !== -1) {
+                return true;
+              }
+              if (preview.description && preview.description.toLowerCase().indexOf(q) !== -1) {
+                return true;
+              }
+              if (preview.site_name && preview.site_name.toLowerCase().indexOf(q) !== -1) {
+                return true;
+              }
+              return false;
+            });
+          }
+          
+          return false;
         });
       }
       
@@ -5366,20 +6170,32 @@ async function renderSPA(env) {
     function sortItems(items, sortBy) {
       var sorted = items.slice(); // 复制数组
       
+      // 先按置顶状态排序（置顶的在前面）
+      sorted.sort(function(a, b) {
+        if (a.pinned && !b.pinned) return -1;
+        if (!a.pinned && b.pinned) return 1;
+        return 0;
+      });
+      
+      // 再按选定的排序方式排序（在置顶分组内排序）
       if (sortBy === 'time-desc') {
         sorted.sort(function(a, b) {
+          if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
           return new Date(b.timestamp) - new Date(a.timestamp);
         });
       } else if (sortBy === 'time-asc') {
         sorted.sort(function(a, b) {
+          if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
           return new Date(a.timestamp) - new Date(b.timestamp);
         });
       } else if (sortBy === 'tags-desc') {
         sorted.sort(function(a, b) {
+          if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
           return b.tags.length - a.tags.length;
         });
       } else if (sortBy === 'tags-asc') {
         sorted.sort(function(a, b) {
+          if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
           return a.tags.length - b.tags.length;
         });
       }
@@ -5427,7 +6243,10 @@ async function renderSPA(env) {
           '<button class="nav-tab ' + (state.page === 'tags' ? 'active' : '') + '" onclick="navigate(\\'tags\\')">🏷️ 标签</button>' +
           '<button class="nav-tab ' + (state.page === 'admin' || state.page === 'config' || state.page === 'footer' ? 'active' : '') + '" onclick="navigate(\\'admin\\')">⚙️ 管理</button>' +
         '</div>' +
-        '<div class="header-actions">' + renderThemeButton() + '</div>' +
+        '<div class="header-actions">' +
+          '<a href="/rss.xml" target="_blank" class="rss-btn" title="RSS 订阅">📡</a>' +
+          renderThemeButton() +
+        '</div>' +
         '</div></div></header>';
     }
     
@@ -5494,6 +6313,11 @@ async function renderSPA(env) {
     }
     
     function renderFilterBar() {
+      // 如果查看单个收藏，显示返回按钮
+      if (state.currentId) {
+        return '<div class="filter-bar"><span>查看单个收藏</span><button class="filter-clear-btn" onclick="clearFilters()">← 返回全部收藏</button></div>';
+      }
+      
       if (!state.currentTag && !state.currentSource && !state.currentQ) return '';
       
       var html = '<div class="filter-bar"><span>筛选：</span>';
@@ -5523,14 +6347,25 @@ async function renderSPA(env) {
         sourceHtml = '<span>' + escapeHtml(item.source || 'web') + '</span>';
       }
       
+      // 永久链接
+      var permalink = window.location.origin + '/?id=' + item.id;
+      
+      // 管理员操作按钮
       var actions = isAdmin 
         ? '<div class="item-actions">' +
+            '<button class="item-action" onclick="copyItemLink(\\'' + item.id + '\\')" title="分享链接">📤</button>' +
+            '<button class="item-action" onclick="togglePinItem(\\'' + item.id + '\\')" title="' + (item.pinned ? '取消置顶' : '置顶') + '">' + (item.pinned ? '📌' : '🔝') + '</button>' +
+            '<button class="item-action" onclick="toggleHideItem(\\'' + item.id + '\\')" title="' + (item.hidden ? '取消隐藏' : '隐藏') + '">' + (item.hidden ? '👁️' : '🔒') + '</button>' +
             '<button class="item-action" onclick="showEditModal(\\'' + item.id + '\\')" title="编辑">✏️</button>' +
             '<button class="item-action danger" onclick="showDeleteConfirm(\\'' + item.id + '\\')" title="删除">🗑️</button>' +
           '</div>'
-        : '';
+        : '<div class="item-actions">' +
+            '<button class="item-action" onclick="copyItemLink(\\'' + item.id + '\\')" title="分享链接">📤</button>' +
+          '</div>';
       
       var editedBadge = item.edited ? '<span class="edited-badge">✏️ 已编辑</span>' : '';
+      var pinnedBadge = item.pinned ? '<span class="pinned-badge">📌 置顶</span>' : '';
+      var hiddenBadge = item.hidden ? '<span class="hidden-badge">🔒 隐藏</span>' : '';
       
       // 渲染媒体内容
       var mediaHtml = '';
@@ -5549,6 +6384,9 @@ async function renderSPA(env) {
       // 批量选择模式的复选框
       var checkboxHtml = '';
       var cardClasses = 'item-card';
+      if (item.pinned) cardClasses += ' pinned';
+      if (item.hidden) cardClasses += ' hidden-item';
+      
       if (state.batchMode) {
         cardClasses += ' batch-mode';
         var isSelected = state.selectedIds.indexOf(item.id) > -1;
@@ -5568,14 +6406,29 @@ async function renderSPA(env) {
           '</div>' +
           '<div class="item-tags">' + tags + '</div>' +
           '</div>';
+      } else if (actions) {
+        // 如果没有标签但有操作按钮，仍然显示
+        tagsSection = '<div class="item-tags-section">' +
+          '<div class="tags-header">' +
+          '<span class="tags-label"></span>' +
+          actions +
+          '</div>' +
+          '</div>';
       }
       
-      return '<div class="' + cardClasses + '" id="item-' + item.id + '">' +
+      // 卡片改回 div
+      return '<div class="' + cardClasses + '" id="item-' + item.id + '" data-item-id="' + item.id + '">' +
         checkboxHtml +
         tagsSection +
         mediaHtml +
         contentHtml +
-        '<div class="item-meta"><span>📥 ' + sourceHtml + '</span><span>🕐 ' + formatTime(item.timestamp) + '</span>' + editedBadge + '</div>' +
+        '<div class="item-meta">' +
+          '<span>📥 ' + sourceHtml + '</span>' +
+          '<span>🕐 ' + formatTime(item.timestamp) + '</span>' +
+          pinnedBadge +
+          hiddenBadge +
+          editedBadge +
+        '</div>' +
         '</div>';
     }
     
@@ -6690,6 +7543,52 @@ async function renderSPA(env) {
       $('#add-modal').classList.remove('show');
     }
     
+    // 置顶/取消置顶收藏
+    function togglePinItem(id) {
+      var item = state.items.find(function(i) { return i.id === id; });
+      if (!item) return;
+      
+      var newPinned = !item.pinned;
+      showLoading();
+      apiCall('POST', '/api/pin/' + id, { pinned: newPinned })
+        .then(function(data) {
+          hideLoading();
+          if (data.success) {
+            showToast(newPinned ? '✅ 已置顶' : '✅ 已取消置顶');
+            loadData().then(function() { render(); });
+          } else {
+            showToast(data.error || '操作失败');
+          }
+        })
+        .catch(function() {
+          hideLoading();
+          showToast('操作失败');
+        });
+    }
+    
+    // 隐藏/取消隐藏收藏
+    function toggleHideItem(id) {
+      var item = state.items.find(function(i) { return i.id === id; });
+      if (!item) return;
+      
+      var newHidden = !item.hidden;
+      showLoading();
+      apiCall('POST', '/api/hide/' + id, { hidden: newHidden })
+        .then(function(data) {
+          hideLoading();
+          if (data.success) {
+            showToast(newHidden ? '🔒 已隐藏' : '👁️ 已取消隐藏');
+            loadData().then(function() { render(); });
+          } else {
+            showToast(data.error || '操作失败');
+          }
+        })
+        .catch(function() {
+          hideLoading();
+          showToast('操作失败');
+        });
+    }
+    
     function showDeleteConfirm(id) {
       deleteId = id;
       $('#confirm-modal').classList.add('show');
@@ -6790,17 +7689,14 @@ async function renderSPA(env) {
         var preview = $('#logo-preview');
         if (preview.dataset.base64) config.logo = preview.dataset.base64;
       }
-      showLoading();
-      apiCall('POST', '/api/site-config', config).then(function(data) {
-        hideLoading();
-        if (data.success) {
+      
+      apiCallWithUI('POST', '/api/site-config', config, {
+        successMessage: '网站配置已保存',
+        onSuccess: function(data) {
           state.siteConfig = data.config;
-          showToast('网站配置已保存');
           document.title = config.title + ' - ' + config.description;
-        } else {
-          showToast(data.error || '保存失败');
         }
-      }).catch(function() { hideLoading(); showToast('保存失败'); });
+      });
     }
     
     function loadBotConfigForEdit() {
@@ -6829,30 +7725,21 @@ async function renderSPA(env) {
       };
       var token = $('#cfg-bot-token').value.trim();
       if (token) config.bot_token = token;
-      showLoading();
-      apiCall('POST', '/api/bot-config', config).then(function(data) {
-        hideLoading();
-        if (data.success) {
-          showToast('Bot 配置已保存');
+      
+      apiCallWithUI('POST', '/api/bot-config', config, {
+        successMessage: 'Bot 配置已保存',
+        onSuccess: function() {
           $('#cfg-bot-token').value = '';
           loadBotConfigForEdit();
-        } else {
-          showToast(data.error || '保存失败');
         }
-      }).catch(function() { hideLoading(); showToast('保存失败'); });
+      });
     }
     
     function setupWebhook() {
-      showLoading();
-      apiCall('POST', '/api/set-webhook', {}).then(function(data) {
-        hideLoading();
-        if (data.success) {
-          showToast('Webhook 设置成功！已启用私聊和频道消息同步功能。');
-          loadBotConfigForEdit();
-        } else {
-          showToast(data.error || 'Webhook 设置失败');
-        }
-      }).catch(function() { hideLoading(); showToast('Webhook 设置失败'); });
+      apiCallWithUI('POST', '/api/set-webhook', {}, {
+        successMessage: 'Webhook 设置成功！已启用私聊和频道消息同步功能。',
+        onSuccess: loadBotConfigForEdit
+      });
     }
     
     function savePreviewConfig() {
@@ -6863,16 +7750,12 @@ async function renderSPA(env) {
         show_preview_sitename: $('#cfg-show-preview-sitename').checked
       };
       
-      showLoading();
-      apiCall('POST', '/api/site-config', config).then(function(data) {
-        hideLoading();
-        if (data.success) {
+      apiCallWithUI('POST', '/api/site-config', config, {
+        successMessage: '链接预览配置已保存',
+        onSuccess: function(data) {
           state.siteConfig = data.config;
-          showToast('链接预览配置已保存');
-        } else {
-          showToast(data.error || '保存失败');
         }
-      }).catch(function() { hideLoading(); showToast('保存失败'); });
+      });
     }
     
     // ========== Footer Config Functions ==========
@@ -7042,36 +7925,34 @@ async function renderSPA(env) {
         return;
       }
       
-      showLoading();
-      apiCall('POST', '/api/site-config', { footer_links: links }).then(function(data) {
-        hideLoading();
-        if (data.success) {
+      apiCallWithUI('POST', '/api/site-config', { footer_links: links }, {
+        successMessage: '页脚配置已保存',
+        onSuccess: function(data) {
           state.siteConfig = data.config;
           syncFooterItems();
-          showToast('页脚配置已保存');
           render();
-        } else {
-          showToast(data.error || '保存失败');
         }
-      }).catch(function() { hideLoading(); showToast('保存失败'); });
+      });
     }
     
     // ========== Initialize ==========
     function init() {
       document.documentElement.className = state.theme;
       
+      // 先解析 URL 参数，设置 state
+      var path = window.location.pathname;
+      var params = new URLSearchParams(window.location.search);
+      if (params.get('tag')) state.currentTag = params.get('tag');
+      if (params.get('source')) state.currentSource = params.get('source');
+      if (params.get('q')) state.currentQ = params.get('q');
+      if (params.get('id')) state.currentId = params.get('id');
+      
       // 显示加载动画
       showLoading();
       
-      // 异步加载初始数据
+      // 然后加载数据（这时 state.currentId 等参数已经设置好了）
       loadData().then(function() {
         hideLoading();
-        
-        var path = window.location.pathname;
-        var params = new URLSearchParams(window.location.search);
-        if (params.get('tag')) state.currentTag = params.get('tag');
-        if (params.get('source')) state.currentSource = params.get('source');
-        if (params.get('q')) state.currentQ = params.get('q');
         
         if (path === '/admin' || path === '/admin/') {
           state.page = 'admin';
@@ -7108,35 +7989,36 @@ async function renderSPA(env) {
         state.currentTag = params.get('tag') || '';
         state.currentSource = params.get('source') || '';
         state.currentQ = params.get('q') || '';
-        if (path === '/admin' || path === '/admin/') {
-          state.page = 'admin';
-          checkAuth().then(function(data) {
-            state.isAdmin = data.authenticated;
+        state.currentId = params.get('id') || '';
+        
+        // 路径到页面的映射
+        var pathMap = {
+          '/admin': 'admin',
+          '/admin/': 'admin',
+          '/tags': 'tags',
+          '/tags/': 'tags',
+          '/config': 'config',
+          '/config/': 'config',
+          '/footer': 'footer',
+          '/footer/': 'footer',
+          '/preview-config': 'preview-config',
+          '/preview-config/': 'preview-config'
+        };
+        
+        var page = pathMap[path] || 'home';
+        state.page = page;
+        
+        // 如果是首页，需要重新加载数据（因为筛选条件可能变了）
+        if (page === 'home') {
+          loadData().then(function() {
             render();
           });
-        } else if (path === '/tags' || path === '/tags/') {
-          state.page = 'tags';
-          render();
-        } else if (path === '/config' || path === '/config/') {
-          state.page = 'config';
-          checkAuth().then(function(data) {
-            state.isAdmin = data.authenticated;
-            render();
-          });
-        } else if (path === '/footer' || path === '/footer/') {
-          state.page = 'footer';
-          checkAuth().then(function(data) {
-            state.isAdmin = data.authenticated;
-            render();
-          });
-        } else if (path === '/preview-config' || path === '/preview-config/') {
-          state.page = 'preview-config';
+        } else if (requiresAuth(page)) {
           checkAuth().then(function(data) {
             state.isAdmin = data.authenticated;
             render();
           });
         } else {
-          state.page = 'home';
           render();
         }
       });
@@ -7168,8 +8050,28 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
+    
+    // 存储 request 到 env 以便在其他地方使用
+    env.request = request;
 
     try {
+      // SEO & Feed 路由
+      if (path === '/rss.xml' && method === 'GET') {
+        return generateRSSFeed(env, request);
+      }
+      
+      if (path === '/atom.xml' && method === 'GET') {
+        return generateAtomFeed(env, request);
+      }
+      
+      if (path === '/sitemap.xml' && method === 'GET') {
+        return generateSitemap(env, request);
+      }
+      
+      if (path === '/robots.txt' && method === 'GET') {
+        return generateRobotsTxt(request);
+      }
+      
       // PWA Manifest
       if (path === '/manifest.json' && method === 'GET') {
         return handleManifest(env);
@@ -7254,6 +8156,16 @@ export default {
         return handleApiDelete(request, env, id);
       }
       
+      if (path.startsWith('/api/pin/') && method === 'POST') {
+        const id = path.replace('/api/pin/', '');
+        return handleApiPin(request, env, id);
+      }
+      
+      if (path.startsWith('/api/hide/') && method === 'POST') {
+        const id = path.replace('/api/hide/', '');
+        return handleApiHide(request, env, id);
+      }
+      
       // 所有其他 GET 请求返回 SPA
       if (method === 'GET') {
         const html = await renderSPA(env);
@@ -7261,10 +8173,10 @@ export default {
           headers: { 
             'Content-Type': 'text/html; charset=utf-8',
             // HTML 可以缓存（因为数据已分离，通过 API 异步加载）
-            // 浏览器缓存 1 小时，CDN 缓存 5 分钟
-            'Cache-Control': 'public, max-age=3600, s-maxage=300',
+            // 浏览器缓存 5 分钟，CDN 缓存 1 分钟
+            'Cache-Control': 'public, max-age=300, s-maxage=60',
             // 允许 CDN 缓存
-            'CDN-Cache-Control': 'public, max-age=300'
+            'CDN-Cache-Control': 'public, max-age=60'
           }
         });
       }
