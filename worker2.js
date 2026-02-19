@@ -440,6 +440,8 @@ function extractUrls(text) {
  */
 function decodeHtmlEntities(text) {
   if (!text) return '';
+  
+  // 先处理常见的命名实体
   const entities = {
     '&amp;': '&',
     '&lt;': '<',
@@ -448,8 +450,79 @@ function decodeHtmlEntities(text) {
     '&#039;': "'",
     '&#x27;': "'",
     '&apos;': "'",
+    '&nbsp;': ' ',
+    '&ndash;': '–',
+    '&mdash;': '—',
+    '&hellip;': '…',
+    '&ldquo;': '"',
+    '&rdquo;': '"',
+    '&lsquo;': '\u2018',
+    '&rsquo;': '\u2019',
+    '&bull;': '•',
+    '&copy;': '©',
+    '&reg;': '®',
+    '&trade;': '™',
+    '&euro;': '€',
+    '&pound;': '£',
+    '&yen;': '¥',
+    '&cent;': '¢',
+    '&sect;': '§',
+    '&para;': '¶',
+    '&dagger;': '†',
+    '&Dagger;': '‡',
+    '&deg;': '°',
+    '&prime;': '\u2032',
+    '&Prime;': '\u2033',
+    '&infin;': '∞',
+    '&ne;': '≠',
+    '&le;': '≤',
+    '&ge;': '≥',
+    '&plusmn;': '±',
+    '&times;': '×',
+    '&divide;': '÷',
+    '&minus;': '−',
+    '&radic;': '√',
+    '&sum;': '∑',
+    '&int;': '∫',
+    '&part;': '∂',
+    '&alpha;': 'α',
+    '&beta;': 'β',
+    '&gamma;': 'γ',
+    '&delta;': 'δ',
+    '&epsilon;': 'ε',
+    '&zeta;': 'ζ',
+    '&eta;': 'η',
+    '&theta;': 'θ',
+    '&pi;': 'π',
+    '&sigma;': 'σ',
+    '&omega;': 'ω',
+    '&hearts;': '♥',
+    '&clubs;': '♣',
+    '&diams;': '♦',
+    '&spades;': '♠',
+    '&larr;': '←',
+    '&uarr;': '↑',
+    '&rarr;': '→',
+    '&darr;': '↓',
   };
-  return text.replace(/&[#\w]+;/g, (entity) => entities[entity] || entity);
+  
+  // 替换命名实体
+  let result = text;
+  for (const entity in entities) {
+    result = result.split(entity).join(entities[entity]);
+  }
+  
+  // 处理数字实体 &#数字; (十进制)
+  result = result.replace(/&#(\d+);/g, function(match, dec) {
+    return String.fromCharCode(parseInt(dec, 10));
+  });
+  
+  // 处理数字实体 &#x数字; (十六进制)
+  result = result.replace(/&#x([0-9A-Fa-f]+);/g, function(match, hex) {
+    return String.fromCharCode(parseInt(hex, 16));
+  });
+  
+  return result;
 }
 
 /**
